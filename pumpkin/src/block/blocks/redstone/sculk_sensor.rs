@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::block::{
     BlockBehaviour, BlockFuture, BlockMetadata, EmitsRedstonePowerArgs, GetRedstonePowerArgs,
-    OnPlaceArgs, OnScheduledTickArgs,
+    OnPlaceArgs, OnScheduledTickArgs, PlacedArgs,
 };
 use crate::world::World;
 use pumpkin_data::block_properties::{
@@ -30,8 +30,9 @@ impl SculkSensorBlock {
             if props.sculk_sensor_phase == SculkSensorPhase::Inactive {
                 props.sculk_sensor_phase = SculkSensorPhase::Active;
                 props.power = power;
+                let new_state_id = props.to_state_id(block);
                 world
-                    .set_block_state(pos, props.to_state_id(block), BlockFlags::NOTIFY_ALL)
+                    .set_block_state(pos, new_state_id, BlockFlags::NOTIFY_ALL)
                     .await;
                 world.update_neighbors(pos, None).await;
                 world.schedule_block_tick(block, *pos, 30, TickPriority::Normal);
@@ -46,7 +47,7 @@ impl SculkSensorBlock {
                     .set_block_state(pos, props.to_state_id(block), BlockFlags::NOTIFY_ALL)
                     .await;
                 world.update_neighbors(pos, None).await;
-                world.schedule_block_tick(block, *pos, 30, TickPriority::Normal);
+                world.schedule_block_tick(block, *pos, 10, TickPriority::Normal);
             }
         }
     }
@@ -62,6 +63,22 @@ impl BlockBehaviour for SculkSensorBlock {
             } else {
                 let props = SculkSensorLikeProperties::default(args.block);
                 props.to_state_id(args.block)
+            }
+        })
+    }
+
+    fn placed<'a>(&'a self, args: PlacedArgs<'a>) -> BlockFuture<'a, ()> {
+        Box::pin(async move {
+            use crate::block::entities::sculk_sensor::SculkSensorBlockEntity;
+            use crate::block::entities::calibrated_sculk_sensor::CalibratedSculkSensorBlockEntity;
+            if args.block.id == BlockId::CALIBRATED_SCULK_SENSOR {
+                args.world.add_block_entity(Arc::new(
+                    CalibratedSculkSensorBlockEntity::new(*args.position),
+                ));
+            } else {
+                args.world.add_block_entity(Arc::new(
+                    SculkSensorBlockEntity::new(*args.position),
+                ));
             }
         })
     }

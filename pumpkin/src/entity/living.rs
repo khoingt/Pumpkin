@@ -2569,6 +2569,26 @@ impl EntityBase for LivingEntity {
                         )
                         .await;
                 }
+                // Emit STEP game event — vanilla broadcasts GameEvent.STEP
+                // only when the entity has actual horizontal movement.
+                // A standing entity never calls Entity.move(), so no STEP fires.
+                // `movement` is (current_pos − last_pos) computed at tick start;
+                // for a static entity this is exactly (0, 0, 0).
+                {
+                    use crate::world::game_event::vibration::GameEventContext;
+                    use pumpkin_data::game_event::GameEvent;
+                    let m = self.entity.movement.load();
+                    if m.x != 0.0 || m.z != 0.0 {
+                        let entity_pos = self.entity.pos.load();
+                        let source_pos = pumpkin_util::math::vector3::Vector3::new(
+                            entity_pos.x,
+                            entity_pos.y,
+                            entity_pos.z,
+                        );
+                        let context = GameEventContext::of_entity(caller);
+                        world.game_event(GameEvent::Step, source_pos, &context).await;
+                    }
+                }
             }
 
             self.tick_effects().await;

@@ -151,6 +151,7 @@ pub mod end_podium;
 pub mod natural_spawner;
 pub mod scoreboard;
 pub mod weather;
+pub mod game_event;
 
 use crate::world::natural_spawner::{SpawnState, spawn_for_chunk};
 use pumpkin_config::lighting::LightingEngineConfig;
@@ -5139,6 +5140,59 @@ impl World {
             }
             chunk.mark_dirty(true);
         });
+    }
+
+    /// Dispatch a game event to all in-range sculk listeners.
+    pub async fn game_event(
+        self: &Arc<Self>,
+        event: pumpkin_data::game_event::GameEvent,
+        source_position: pumpkin_util::math::vector3::Vector3<f64>,
+        context: &crate::world::game_event::vibration::GameEventContext,
+    ) {
+        use crate::world::game_event::vibration::SculkSensorVibrationUser;
+
+        // Max listener radius across all sculk sensors. Used as a chunk-level
+        // pre-filter so we skip entire chunks that can't possibly contain a
+        // sensor in range — avoids iterating block entities for far chunks.
+        // ponytail: hardcoded max; only sculk sensors have listeners today.
+        const MAX_LISTENER_RADIUS: f64 = 16.0;
+
+        let active = self.active_chunks.load();
+        for chunk_pos in active.iter() {
+            // Cheap AABB distance check: skip chunk if source is more than
+            // MAX_LISTENER_RADIUS from any face of the chunk's 16³ cube.
+            let chunk_min_x = chunk_pos.x as f64 * 16.0;
+            let chunk_min_z = chunk_pos.y as f64 * 16.0;
+            // ponytail: sculk sensors care about horizontal distance mostly;
+            // use full 3D AABB to be safe. Y range is the chunk's 16-block section.
+            // We don't know the chunk's Y range cheaply, so skip Y check for now.
+            let dx = (chunk_min_x - source_position.x).max(0.0).max(source_position.x - (chunk_min_x + 16.0));
+            let dz = (chunk_min_z - source_position.z).max(0.0).max(source_position.z - (chunk_min_z + 16.0));
+            if dx * dx + dz * dz > MAX_LISTENER_RADIUS * MAX_LISTENER_RADIUS {
+                continue;
+            }
+            if let Some(chunk_bes) = self.block_entities.get(chunk_pos) {
+                for (pos, be) in chunk_bes.iter() {
+                    use crate::block::entities::sculk_sensor::SculkSensorBlockEntity;
+                    let Some(sensor) =
+                        be.as_any().downcast_ref::<SculkSensorBlockEntity>()
+                    else {
+                        continue;
+                    };
+                    let user = SculkSensorVibrationUser::new(*pos, 8);
+                    sensor
+                        .listener
+                        .handle_game_event(
+                            self,
+                            event,
+                            context,
+                            &source_position,
+                            &user,
+                        )
+                        .await;
+                }
+            }
+        }
     }
 
     fn intersects_aabb_with_direction(
