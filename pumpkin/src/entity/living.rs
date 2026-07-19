@@ -1204,6 +1204,16 @@ impl LivingEntity {
     ) {
         if ground {
             let fall_distance = self.fall_distance.swap(0.0);
+            // Vanilla checkFallDamage: emit HIT_GROUND for any landing with
+            // fallDistance > 0, regardless of damage immunity.
+            if fall_distance > 0.0 {
+                use crate::world::game_event::vibration::GameEventContext;
+                use pumpkin_data::game_event::GameEvent;
+                let world = self.entity.world.load();
+                let source_pos = self.entity.pos.load();
+                let context = GameEventContext::of_entity(&caller);
+                world.game_event(GameEvent::HitGround, source_pos, &context).await;
+            }
             if fall_distance <= 0.0
                 || dont_damage
                 || self.should_prevent_fall_damage()
