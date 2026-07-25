@@ -19,10 +19,6 @@ use crate::world::World;
 
 use super::dist_sq;
 
-// ---------------------------------------------------------------------------
-// GameEventExt — frequency mapping (Vanilla VIBRATION_FREQUENCY_FOR_EVENT)
-// ---------------------------------------------------------------------------
-
 pub trait GameEventExt {
     fn default_frequency(&self) -> u32;
 }
@@ -30,29 +26,19 @@ pub trait GameEventExt {
 impl GameEventExt for GameEvent {
     fn default_frequency(&self) -> u32 {
         match self {
-            // Freq 1
             Self::Step | Self::Swim | Self::Flap | Self::Resonate1 => 1,
-            // Freq 2
             Self::ProjectileLand | Self::HitGround | Self::Splash | Self::Bounce | Self::Resonate2 => 2,
-            // Freq 3
             Self::ItemInteractFinish | Self::ProjectileShoot | Self::InstrumentPlay | Self::Resonate3 => 3,
-            // Freq 4
             Self::EntityAction | Self::ElytraGlide | Self::Unequip | Self::Resonate4 => 4,
-            // Freq 5
             Self::EntityDismount | Self::Equip | Self::Resonate5 => 5,
-            // Freq 6
             Self::EntityInteract | Self::Shear | Self::EntityMount | Self::Resonate6 => 6,
-            // Freq 7
             Self::EntityDamage | Self::Resonate7 => 7,
-            // Freq 8
             Self::Drink | Self::Eat | Self::Resonate8 => 8,
-            // Freq 9
             Self::ContainerClose
             | Self::BlockClose
             | Self::BlockDeactivate
             | Self::BlockDetach
             | Self::Resonate9 => 9,
-            // Freq 10
             Self::ContainerOpen
             | Self::BlockOpen
             | Self::BlockActivate
@@ -60,24 +46,15 @@ impl GameEventExt for GameEvent {
             | Self::PrimeFuse
             | Self::NoteBlockPlay
             | Self::Resonate10 => 10,
-            // Freq 11
             Self::BlockChange | Self::Resonate11 => 11,
-            // Freq 12
             Self::BlockDestroy | Self::FluidPickup | Self::Resonate12 => 12,
-            // Freq 13
             Self::BlockPlace | Self::FluidPlace | Self::Resonate13 => 13,
-            // Freq 14
             Self::EntityPlace | Self::LightningStrike | Self::Teleport | Self::Resonate14 => 14,
-            // Freq 15
             Self::EntityDie | Self::Explode | Self::Resonate15 => 15,
             _ => 0,
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// getRedstoneStrengthForDistance — vanilla line 118-121
-// ---------------------------------------------------------------------------
 
 #[must_use]
 pub fn get_redstone_strength_for_distance(d: f32, listener_radius: i32) -> i32 {
@@ -87,10 +64,6 @@ pub fn get_redstone_strength_for_distance(d: f32, listener_radius: i32) -> i32 {
     let power_scale = 15.0 / (listener_radius as f32);
     (15 - (power_scale * d).floor() as i32).max(1)
 }
-
-// ---------------------------------------------------------------------------
-// GameEventContext
-// ---------------------------------------------------------------------------
 
 #[derive(Clone, Default)]
 pub struct GameEventContext {
@@ -109,10 +82,6 @@ impl GameEventContext {
     }
 }
 
-// ---------------------------------------------------------------------------
-// VibrationInfo
-// ---------------------------------------------------------------------------
-
 pub struct VibrationInfo {
     pub game_event: GameEvent,
     pub pos: Vector3<f64>,
@@ -120,10 +89,6 @@ pub struct VibrationInfo {
     pub distance: f32,
     pub tick: i64,
 }
-
-// ---------------------------------------------------------------------------
-// VibrationSelector — single-candidate, same-tick replacement (vanilla model)
-// ---------------------------------------------------------------------------
 
 pub struct VibrationSelector {
     candidate: Option<VibrationInfo>,
@@ -140,7 +105,6 @@ impl VibrationSelector {
         Self { candidate: None }
     }
 
-    /// Vanilla `addCandidate` — accept or replace based on distance/frequency.
     pub fn add_candidate(&mut self, info: VibrationInfo) {
         let should_replace = match &self.candidate {
             None => true,
@@ -163,8 +127,6 @@ impl VibrationSelector {
         }
     }
 
-    /// Vanilla `chosenCandidate` — returns the vibration only if it arrived
-    /// at least one tick ago (`tick < time`), then clears the candidate.
     pub fn choose(&mut self, time: i64) -> Option<VibrationInfo> {
         let info = self.candidate.as_ref()?;
         if info.tick < time {
@@ -174,15 +136,7 @@ impl VibrationSelector {
         }
     }
 
-    /// Vanilla `startOver` — clear the stored candidate.
-    pub fn start_over(&mut self) {
-        self.candidate = None;
-    }
 }
-
-// ---------------------------------------------------------------------------
-// VibrationData
-// ---------------------------------------------------------------------------
 
 pub struct VibrationData {
     current_vibration: Option<VibrationInfo>,
@@ -209,7 +163,6 @@ impl VibrationData {
         &mut self.selector
     }
 
-    /// Vanilla `data.getCurrentVibration() != null`.
     #[must_use]
     pub const fn has_current_vibration(&self) -> bool {
         self.current_vibration.is_some()
@@ -238,10 +191,6 @@ impl VibrationData {
     }
 }
 
-// ---------------------------------------------------------------------------
-// VibrationUser
-// ---------------------------------------------------------------------------
-
 pub trait VibrationUser: Send + Sync {
     fn get_listener_radius(&self) -> i32;
 
@@ -268,10 +217,6 @@ pub trait VibrationUser: Send + Sync {
     }
 }
 
-// ---------------------------------------------------------------------------
-// VibrationListener
-// ---------------------------------------------------------------------------
-
 pub struct VibrationListener {
     pub position: BlockPos,
     pub data: Mutex<VibrationData>,
@@ -286,7 +231,6 @@ impl VibrationListener {
         }
     }
 
-    /// Vanilla `Listener.handleGameEvent` — validate + schedule candidate.
     pub async fn handle_game_event(
         &self,
         world: &Arc<World>,
@@ -311,10 +255,7 @@ impl VibrationListener {
 
         let distance = d_sq.sqrt() as f32;
         let world_tick = world.level_time.lock().await.query_gametime();
-
         let mut data = self.data.lock().await;
-        // Vanilla: reject new candidates while a vibration is in flight
-        // (VibrationSystem.java:213 — `data.getCurrentVibration() != null`).
         if data.has_current_vibration() {
             return false;
         }
@@ -329,10 +270,6 @@ impl VibrationListener {
     }
 }
 
-// ---------------------------------------------------------------------------
-// VibrationTicker
-// ---------------------------------------------------------------------------
-
 pub struct VibrationTicker;
 
 impl VibrationTicker {
@@ -341,19 +278,17 @@ impl VibrationTicker {
         listener: &VibrationListener,
         user: &dyn VibrationUser,
     ) {
-        // Batch all three locks into one acquisition — avoids 3 async await points
-        // per BE-tick and the lock reacquire dance.
-        let arrived_vib = {
-            let mut data = listener.data.lock().await;
-            let world_tick = world.level_time.lock().await.query_gametime();
-            data.try_select_and_schedule(world_tick, user);
-            if data.tick_receive() {
-                data.consume_current()
-            } else {
-                None
-            }
+        let world_tick = world.level_time.lock().await.query_gametime();
+        let mut data = listener.data.lock().await;
+        data.try_select_and_schedule(world_tick, user);
+        let vib = if data.tick_receive() {
+            data.consume_current()
+        } else {
+            None
         };
-        let Some(vib) = arrived_vib else { return };
+        drop(data);
+
+        let Some(vib) = vib else { return };
 
         user.on_receive_vibration(
             world,
@@ -365,15 +300,6 @@ impl VibrationTicker {
         )
         .await;
     }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers — sculk sensor phase checks
-// ---------------------------------------------------------------------------
-
-fn is_sculk_sensor_block(state_id: BlockStateId) -> bool {
-    let id = state_id.to_block().id;
-    id == BlockId::SCULK_SENSOR || id == BlockId::CALIBRATED_SCULK_SENSOR
 }
 
 fn is_phase_inactive(state_id: BlockStateId) -> bool {
@@ -388,10 +314,6 @@ fn is_phase_inactive(state_id: BlockStateId) -> bool {
         false
     }
 }
-
-// ---------------------------------------------------------------------------
-// SculkSensorVibrationUser — shared between regular & calibrated sensors
-// ---------------------------------------------------------------------------
 
 pub struct SculkSensorVibrationUser {
     pub position: BlockPos,
@@ -418,16 +340,12 @@ impl VibrationUser for SculkSensorVibrationUser {
         _context: &GameEventContext,
     ) -> bool {
         let state = world.get_block_state(listener_pos);
-        if !is_sculk_sensor_block(state.id) {
-            return false;
-        }
         if !is_phase_inactive(state.id) {
             return false;
         }
         if event.default_frequency() == 0 {
             return false;
         }
-        // ponytail: IGNORE_VIBRATIONS_SNEAKING filter deferred
         true
     }
     fn on_receive_vibration<'a>(
@@ -456,6 +374,7 @@ impl VibrationUser for SculkSensorVibrationUser {
                 if let Some(sensor) = be.as_any().downcast_ref::<SculkSensorBlockEntity>() {
                     *sensor.last_vibration_frequency.lock().await = event_frequency;
                 }
+                world.update_block_entity(&be);
             }
             SculkSensorBlock::trigger(world, listener_pos, block, power as u8).await;
         })

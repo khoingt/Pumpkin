@@ -46,6 +46,13 @@ impl BlockEntity for SculkSensorBlockEntity {
             );
         })
     }
+    fn chunk_data_nbt(&self) -> Option<NbtCompound> {
+        let mut nbt = NbtCompound::new();
+        futures::executor::block_on(async {
+            self.write_internal(&mut nbt).await;
+        });
+        Some(nbt)
+    }
 
     fn as_any(&self) -> &dyn std::any::Any {
         self

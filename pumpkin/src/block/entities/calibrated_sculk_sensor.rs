@@ -46,6 +46,13 @@ impl BlockEntity for CalibratedSculkSensorBlockEntity {
             );
         })
     }
+    fn chunk_data_nbt(&self) -> Option<NbtCompound> {
+        let mut nbt = NbtCompound::new();
+        futures::executor::block_on(async {
+            self.write_internal(&mut nbt).await;
+        });
+        Some(nbt)
+    }
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -56,9 +63,6 @@ impl BlockEntity for CalibratedSculkSensorBlockEntity {
         world: &'a Arc<World>,
     ) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
-            // ponytail: calibrated sensor has radius 16 and a back-signal
-            // frequency filter. The frequency filter is deferred until
-            // redstone comparator output is wired.
             let user = SculkSensorVibrationUser::new(self.position, 16);
             VibrationTicker::tick(world, &self.listener, &user).await;
         })

@@ -1204,8 +1204,6 @@ impl LivingEntity {
     ) {
         if ground {
             let fall_distance = self.fall_distance.swap(0.0);
-            // Vanilla checkFallDamage: emit HIT_GROUND for any landing with
-            // fallDistance > 0, regardless of damage immunity.
             if fall_distance > 0.0 {
                 use crate::world::game_event::vibration::GameEventContext;
                 use pumpkin_data::game_event::GameEvent;
@@ -2579,11 +2577,6 @@ impl EntityBase for LivingEntity {
                         )
                         .await;
                 }
-                // Emit STEP game event — vanilla broadcasts GameEvent.STEP
-                // only when the entity has actual horizontal movement.
-                // A standing entity never calls Entity.move(), so no STEP fires.
-                // `movement` is (current_pos − last_pos) computed at tick start;
-                // for a static entity this is exactly (0, 0, 0).
                 {
                     use crate::world::game_event::vibration::GameEventContext;
                     use pumpkin_data::game_event::GameEvent;
