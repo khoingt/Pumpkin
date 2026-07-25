@@ -972,6 +972,10 @@ impl World {
         };
 
         let active_chunks = self.active_chunks.load();
+        for chunk_pos in active_chunks.iter() {
+            self.materialize_pending_block_entities(*chunk_pos);
+        }
+
         let mut block_entities: Vec<Arc<dyn BlockEntity>> = Vec::new();
         for chunk_pos in active_chunks.iter() {
             if let Some(chunk_block_entities) = self.block_entities.get(chunk_pos) {
@@ -5004,6 +5008,52 @@ impl World {
             .insert(*block_pos, entity.clone());
         Some(entity)
     }
+    fn materialize_pending_block_entities(&self, chunk_pos: Vector2<i32>) {
+        let result = self
+            .level
+            .read_chunk_sync(&chunk_pos, |chunk| {
+                // Only drain entries that don't already have a live entity.
+                // Runtime updates via update_block_entity write NBT into pending
+                // for disk persistence — those must survive until the save.
+                let mut pending = chunk.pending_block_entities.lock().unwrap();
+                let has_scheduled_ticks =
+                    chunk.block_ticks.has_ticks() || chunk.fluid_ticks.has_ticks();
+                let nbt_entries: Vec<(BlockPos, NbtCompound)> = {
+                    let live = self.block_entities.get(&chunk_pos);
+                    pending
+                        .iter()
+                        .filter(|(pos, _)| {
+                            live.as_ref().is_none_or(|e| !e.contains_key(pos))
+                        })
+                        .map(|(pos, nbt)| (*pos, nbt.clone()))
+                        .collect()
+                };
+                for (pos, _) in &nbt_entries {
+                    pending.remove(pos);
+                }
+                (nbt_entries, has_scheduled_ticks)
+            })
+            .unwrap_or_default();
+
+        let (nbt_entries, has_scheduled_ticks) = result;
+
+        // Register this chunk for scheduled tick processing if it has pending ticks.
+        if has_scheduled_ticks && !self.level.chunks_with_scheduled_ticks.contains(&chunk_pos) {
+            self.level.chunks_with_scheduled_ticks.insert(chunk_pos);
+        }
+
+        if nbt_entries.is_empty() {
+            return;
+        }
+
+        let mut entry = self.block_entities.entry(chunk_pos).or_default();
+        for (pos, nbt) in nbt_entries {
+            if let Some(be) = block_entity_from_nbt(&nbt) {
+                entry.insert(pos, be);
+            }
+        }
+    }
+
 
     pub fn add_block_entity(&self, block_entity: Arc<dyn BlockEntity>) {
         let block_pos = block_entity.get_position();
@@ -5028,6 +5078,9 @@ impl World {
             .or_default()
             .insert(block_pos, block_entity);
         self.level.read_chunk_sync(&chunk_pos, |chunk| {
+            if let Some(nbt) = &block_entity_nbt {
+                chunk.pending_block_entities.lock().unwrap().insert(block_pos, nbt.clone());
+            }
             chunk.mark_dirty(true);
         });
     }
@@ -5057,6 +5110,7 @@ impl World {
             self.block_entities
                 .remove_if(&chunk_pos, |_, entities| entities.is_empty());
             self.level.read_chunk_sync(&chunk_pos, |chunk| {
+                chunk.pending_block_entities.lock().unwrap().remove(block_pos);
                 chunk.mark_dirty(true);
             });
         }
@@ -5080,6 +5134,9 @@ impl World {
             );
         }
         self.level.read_chunk_sync(&chunk_pos, |chunk| {
+            if let Some(nbt) = &block_entity_nbt {
+                chunk.pending_block_entities.lock().unwrap().insert(block_pos, nbt.clone());
+            }
             chunk.mark_dirty(true);
         });
     }
