@@ -27,8 +27,15 @@ impl GameEventExt for GameEvent {
     fn default_frequency(&self) -> u32 {
         match self {
             Self::Step | Self::Swim | Self::Flap | Self::Resonate1 => 1,
-            Self::ProjectileLand | Self::HitGround | Self::Splash | Self::Bounce | Self::Resonate2 => 2,
-            Self::ItemInteractFinish | Self::ProjectileShoot | Self::InstrumentPlay | Self::Resonate3 => 3,
+            Self::ProjectileLand
+            | Self::HitGround
+            | Self::Splash
+            | Self::Bounce
+            | Self::Resonate2 => 2,
+            Self::ItemInteractFinish
+            | Self::ProjectileShoot
+            | Self::InstrumentPlay
+            | Self::Resonate3 => 3,
             Self::EntityAction | Self::ElytraGlide | Self::Unequip | Self::Resonate4 => 4,
             Self::EntityDismount | Self::Equip | Self::Resonate5 => 5,
             Self::EntityInteract | Self::Shear | Self::EntityMount | Self::Resonate6 => 6,
@@ -117,8 +124,7 @@ impl VibrationSelector {
                     false
                 } else {
                     // Same distance — higher frequency wins tiebreak.
-                    info.game_event.default_frequency()
-                        > prev.game_event.default_frequency()
+                    info.game_event.default_frequency() > prev.game_event.default_frequency()
                 }
             }
         };
@@ -135,7 +141,6 @@ impl VibrationSelector {
             None
         }
     }
-
 }
 
 pub struct VibrationData {
@@ -273,11 +278,7 @@ impl VibrationListener {
 pub struct VibrationTicker;
 
 impl VibrationTicker {
-    pub async fn tick(
-        world: &Arc<World>,
-        listener: &VibrationListener,
-        user: &dyn VibrationUser,
-    ) {
+    pub async fn tick(world: &Arc<World>, listener: &VibrationListener, user: &dyn VibrationUser) {
         let world_tick = world.level_time.lock().await.query_gametime();
         let mut data = listener.data.lock().await;
         data.try_select_and_schedule(world_tick, user);

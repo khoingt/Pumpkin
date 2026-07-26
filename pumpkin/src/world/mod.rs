@@ -148,10 +148,10 @@ pub mod bossbar;
 pub mod custom_bossbar;
 pub mod dragon_fight;
 pub mod end_podium;
+pub mod game_event;
 pub mod natural_spawner;
 pub mod scoreboard;
 pub mod weather;
-pub mod game_event;
 
 use crate::world::natural_spawner::{SpawnState, spawn_for_chunk};
 use pumpkin_config::lighting::LightingEngineConfig;
@@ -5187,29 +5187,25 @@ impl World {
             // ponytail: sculk sensors care about horizontal distance mostly;
             // use full 3D AABB to be safe. Y range is the chunk's 16-block section.
             // We don't know the chunk's Y range cheaply, so skip Y check for now.
-            let dx = (chunk_min_x - source_position.x).max(0.0).max(source_position.x - (chunk_min_x + 16.0));
-            let dz = (chunk_min_z - source_position.z).max(0.0).max(source_position.z - (chunk_min_z + 16.0));
+            let dx = (chunk_min_x - source_position.x)
+                .max(0.0)
+                .max(source_position.x - (chunk_min_x + 16.0));
+            let dz = (chunk_min_z - source_position.z)
+                .max(0.0)
+                .max(source_position.z - (chunk_min_z + 16.0));
             if dx * dx + dz * dz > MAX_LISTENER_RADIUS * MAX_LISTENER_RADIUS {
                 continue;
             }
             if let Some(chunk_bes) = self.block_entities.get(chunk_pos) {
                 for (pos, be) in chunk_bes.iter() {
                     use crate::block::entities::sculk_sensor::SculkSensorBlockEntity;
-                    let Some(sensor) =
-                        be.as_any().downcast_ref::<SculkSensorBlockEntity>()
-                    else {
+                    let Some(sensor) = be.as_any().downcast_ref::<SculkSensorBlockEntity>() else {
                         continue;
                     };
                     let user = SculkSensorVibrationUser::new(*pos, 8);
                     sensor
                         .listener
-                        .handle_game_event(
-                            self,
-                            event,
-                            context,
-                            &source_position,
-                            &user,
-                        )
+                        .handle_game_event(self, event, context, &source_position, &user)
                         .await;
                 }
             }

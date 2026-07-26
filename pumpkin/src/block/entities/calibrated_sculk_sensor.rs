@@ -1,8 +1,8 @@
 use super::BlockEntity;
+use crate::world::World;
 use crate::world::game_event::vibration::{
     SculkSensorVibrationUser, VibrationListener, VibrationTicker,
 };
-use crate::world::World;
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_util::math::position::BlockPos;
 use std::sync::Arc;

@@ -69,16 +69,16 @@ impl BlockBehaviour for SculkSensorBlock {
 
     fn placed<'a>(&'a self, args: PlacedArgs<'a>) -> BlockFuture<'a, ()> {
         Box::pin(async move {
-            use crate::block::entities::sculk_sensor::SculkSensorBlockEntity;
             use crate::block::entities::calibrated_sculk_sensor::CalibratedSculkSensorBlockEntity;
+            use crate::block::entities::sculk_sensor::SculkSensorBlockEntity;
             if args.block.id == BlockId::CALIBRATED_SCULK_SENSOR {
-                args.world.add_block_entity(Arc::new(
-                    CalibratedSculkSensorBlockEntity::new(*args.position),
-                ));
+                args.world
+                    .add_block_entity(Arc::new(CalibratedSculkSensorBlockEntity::new(
+                        *args.position,
+                    )));
             } else {
-                args.world.add_block_entity(Arc::new(
-                    SculkSensorBlockEntity::new(*args.position),
-                ));
+                args.world
+                    .add_block_entity(Arc::new(SculkSensorBlockEntity::new(*args.position)));
             }
         })
     }
