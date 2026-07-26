@@ -5032,9 +5032,7 @@ impl World {
                     let live = self.block_entities.get(&chunk_pos);
                     pending
                         .iter()
-                        .filter(|(pos, _)| {
-                            live.as_ref().is_none_or(|e| !e.contains_key(pos))
-                        })
+                        .filter(|(pos, _)| live.as_ref().is_none_or(|e| !e.contains_key(pos)))
                         .map(|(pos, nbt)| (*pos, nbt.clone()))
                         .collect()
                 };
@@ -5064,7 +5062,6 @@ impl World {
         }
     }
 
-
     pub fn add_block_entity(&self, block_entity: Arc<dyn BlockEntity>) {
         let block_pos = block_entity.get_position();
         let chunk_pos = block_pos.chunk_position();
@@ -5089,7 +5086,11 @@ impl World {
             .insert(block_pos, block_entity);
         self.level.read_chunk_sync(&chunk_pos, |chunk| {
             if let Some(nbt) = &block_entity_nbt {
-                chunk.pending_block_entities.lock().unwrap().insert(block_pos, nbt.clone());
+                chunk
+                    .pending_block_entities
+                    .lock()
+                    .unwrap()
+                    .insert(block_pos, nbt.clone());
             }
             chunk.mark_dirty(true);
         });
@@ -5120,7 +5121,11 @@ impl World {
             self.block_entities
                 .remove_if(&chunk_pos, |_, entities| entities.is_empty());
             self.level.read_chunk_sync(&chunk_pos, |chunk| {
-                chunk.pending_block_entities.lock().unwrap().remove(block_pos);
+                chunk
+                    .pending_block_entities
+                    .lock()
+                    .unwrap()
+                    .remove(block_pos);
                 chunk.mark_dirty(true);
             });
         }
@@ -5145,7 +5150,11 @@ impl World {
         }
         self.level.read_chunk_sync(&chunk_pos, |chunk| {
             if let Some(nbt) = &block_entity_nbt {
-                chunk.pending_block_entities.lock().unwrap().insert(block_pos, nbt.clone());
+                chunk
+                    .pending_block_entities
+                    .lock()
+                    .unwrap()
+                    .insert(block_pos, nbt.clone());
             }
             chunk.mark_dirty(true);
         });
