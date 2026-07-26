@@ -5028,17 +5028,19 @@ impl World {
                 let mut pending = chunk.pending_block_entities.lock().unwrap();
                 let has_scheduled_ticks =
                     chunk.block_ticks.has_ticks() || chunk.fluid_ticks.has_ticks();
-                let nbt_entries: Vec<(BlockPos, NbtCompound)> = {
-                    let live = self.block_entities.get(&chunk_pos);
-                    pending
-                        .iter()
-                        .filter(|(pos, _)| live.as_ref().is_none_or(|e| !e.contains_key(pos)))
-                        .map(|(pos, nbt)| (*pos, nbt.clone()))
-                        .collect()
-                };
-                for (pos, _) in &nbt_entries {
-                    pending.remove(pos);
+                if pending.is_empty() {
+                    return (Vec::new(), has_scheduled_ticks);
                 }
+                let live = self.block_entities.get(&chunk_pos);
+                let keys_to_extract: Vec<BlockPos> = pending
+                    .keys()
+                    .filter(|pos| live.as_ref().is_none_or(|e| !e.contains_key(pos)))
+                    .copied()
+                    .collect();
+                let nbt_entries: Vec<(BlockPos, NbtCompound)> = keys_to_extract
+                    .iter()
+                    .filter_map(|pos| pending.remove(pos).map(|nbt| (*pos, nbt)))
+                    .collect();
                 (nbt_entries, has_scheduled_ticks)
             })
             .unwrap_or_default();
