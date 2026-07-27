@@ -1,0 +1,75 @@
+name: Debug CI (fast feedback)
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-Dwarnings"
+
+jobs:
+  format:
+    name: Check formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - run: rustup update stable && rustup default stable
+      - run: rustup component add rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+
+  clippy:
+    name: Clippy (debug)
+    runs-on: ubuntu-latest
+    needs: [format]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - run: rustup update stable && rustup default stable
+      - run: rustup component add clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets --all-features
+
+  build_and_test:
+    name: Build & test (debug, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: [clippy]
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - run: rustup update stable && rustup default stable
+      - uses: taiki-e/install-action@nextest
+      - uses: Swatinem/rust-cache@v2
+      - name: Tests (nextest)
+        run: cargo nextest run --verbose
+      - name: Doctests
+        run: cargo test --doc --verbose
+
+  bench:
+    name: Benchmarks (debug)
+    runs-on: ubuntu-latest
+    needs: [build_and_test]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - run: rustup update stable && rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run benchmarks
+        run: cargo bench --package pumpkin --package pumpkin-data --package pumpkin-nbt --package pumpkin-world -v 2>&1 | tee bench-output.log
+      - name: Upload benchmark output
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-output
+          path: bench-output.log
+          retention-days: 30

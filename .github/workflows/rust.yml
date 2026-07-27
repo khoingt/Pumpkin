@@ -1,8 +1,6 @@
 name: Cargo Build, Test, and Linting
 
 on:
-  push:
-  pull_request:
   workflow_dispatch:
 
 env:
@@ -111,7 +109,7 @@ jobs:
       - run: rustup update stable && rustup default stable
       - uses: Swatinem/rust-cache@v2
       - name: Run benchmarks
-        run: cargo bench --package pumpkin --package pumpkin-data --package pumpkin-nbt --package pumpkin-world --timings --unit-graph -v 2>&1 | tee bench-output.log
+        run: cargo bench --package pumpkin --package pumpkin-data --package pumpkin-nbt --package pumpkin-world --timings -v 2>&1 | tee bench-output.log
       - name: Upload benchmark timing report
         if: always()
         uses: actions/upload-artifact@v7
