@@ -6,11 +6,11 @@ use crate::world::game_event::vibration::{
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_util::math::position::BlockPos;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::atomic::{AtomicI32, Ordering};
 
 pub struct CalibratedSculkSensorBlockEntity {
     pub position: BlockPos,
-    pub last_vibration_frequency: Mutex<i32>,
+    pub last_vibration_frequency: AtomicI32,
     pub listener: VibrationListener,
 }
 
@@ -30,7 +30,7 @@ impl BlockEntity for CalibratedSculkSensorBlockEntity {
         let last_vibration_frequency = nbt.get_int("last_vibration_frequency").unwrap_or(0);
         Self {
             position,
-            last_vibration_frequency: Mutex::new(last_vibration_frequency),
+            last_vibration_frequency: AtomicI32::new(last_vibration_frequency),
             listener: VibrationListener::new(position),
         }
     }
@@ -42,7 +42,7 @@ impl BlockEntity for CalibratedSculkSensorBlockEntity {
         Box::pin(async move {
             nbt.put_int(
                 "last_vibration_frequency",
-                *self.last_vibration_frequency.lock().await,
+                self.last_vibration_frequency.load(Ordering::Relaxed),
             );
         })
     }
@@ -73,10 +73,10 @@ impl CalibratedSculkSensorBlockEntity {
     pub const ID: &'static str = "minecraft:calibrated_sculk_sensor";
 
     #[must_use]
-    pub fn new(position: BlockPos) -> Self {
+    pub const fn new(position: BlockPos) -> Self {
         Self {
             position,
-            last_vibration_frequency: Mutex::new(0),
+            last_vibration_frequency: AtomicI32::new(0),
             listener: VibrationListener::new(position),
         }
     }

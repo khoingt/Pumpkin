@@ -75,7 +75,7 @@ impl BlockEntity for HopperBlockEntity {
     fn tick<'a>(&'a self, world: &'a Arc<World>) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
             self.ticked_game_time
-                .store(world.get_world_age().await, Ordering::Relaxed);
+                .store(world.get_world_age(), Ordering::Relaxed);
             if self.cooldown_time.fetch_sub(1, Ordering::Relaxed) <= 0 {
                 self.cooldown_time.store(0, Ordering::Relaxed);
                 let state = HopperLikeProperties::from_state_id(

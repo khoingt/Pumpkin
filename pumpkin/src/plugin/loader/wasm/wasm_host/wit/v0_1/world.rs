@@ -361,7 +361,7 @@ impl pumpkin::plugin::world::HostWorld for PluginHostState {
     }
 
     async fn get_world_age(&mut self, world: Resource<World>) -> wasmtime::Result<u64> {
-        Ok(self.get_world_res(&world)?.provider.get_world_age().await as u64)
+        Ok(self.get_world_res(&world)?.provider.get_world_age() as u64)
     }
 
     async fn get_dimension(&mut self, world: Resource<World>) -> wasmtime::Result<String> {

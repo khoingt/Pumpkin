@@ -1216,9 +1216,7 @@ impl LivingEntity {
                 let world = self.entity.world.load();
                 let source_pos = self.entity.pos.load();
                 let context = GameEventContext::of_entity(&caller);
-                world
-                    .game_event(GameEvent::HitGround, source_pos, &context)
-                    .await;
+                world.game_event(GameEvent::HitGround, source_pos, &context);
             }
             if fall_distance <= 0.0
                 || dont_damage
@@ -2626,9 +2624,7 @@ impl EntityBase for LivingEntity {
                             entity_pos.z,
                         );
                         let context = GameEventContext::of_entity(caller);
-                        world
-                            .game_event(GameEvent::Step, source_pos, &context)
-                            .await;
+                        world.game_event(GameEvent::Step, source_pos, &context);
                     }
                 }
             }

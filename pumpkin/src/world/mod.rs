@@ -11,12 +11,10 @@ use pumpkin_protocol::bedrock::network_item::{
 };
 use pumpkin_protocol::codec::data_component::data_to_proto_sound;
 use pumpkin_world::generation::proto_chunk::GenerationCache;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Weak};
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::atomic::Ordering,
-};
 use tracing::{debug, error, info, trace, warn};
 
 pub mod chunker;
@@ -226,6 +224,12 @@ pub struct World {
     /// Block entities indexed by chunk, so ticking only visits the currently
     /// active chunks instead of scanning every loaded block entity each tick.
     pub block_entities: DashMap<Vector2<i32>, FxHashMap<BlockPos, Arc<dyn BlockEntity>>>,
+    /// Cached game time for lock-free reads from hot paths (vibration listeners).
+    /// Synced from `level_time.world_age` every tick in `tick_environment`.
+    pub game_time: AtomicI64,
+    /// Sculk sensor positions per chunk — avoids iterating all block entities
+    /// on every game event dispatch. Updated in `add_block_entity` / `remove_block_entity`.
+    pub sculk_sensors: DashMap<Vector2<i32>, FxHashSet<BlockPos>>,
 }
 
 impl PartialEq for World {
@@ -314,6 +318,8 @@ impl World {
             forced_chunks: std::sync::Mutex::new(FxHashSet::default()),
             server,
             block_entities: DashMap::new(),
+            game_time: AtomicI64::new(0),
+            sculk_sensors: DashMap::new(),
         }
     }
 
@@ -1125,6 +1131,9 @@ impl World {
                 )
             };
             level_time.tick_time(advance_time, advance_weather);
+            // Sync cached game time for lock-free reads from hot paths.
+            self.game_time
+                .store(level_time.world_age, Ordering::Relaxed);
 
             // Auto-save logic
             if level_time.world_age % 100 == 0 {
@@ -1703,8 +1712,8 @@ impl World {
         }
     }
 
-    pub async fn get_world_age(&self) -> i64 {
-        self.level_time.lock().await.world_age
+    pub fn get_world_age(&self) -> i64 {
+        self.game_time.load(Ordering::Relaxed)
     }
 
     pub async fn get_time_of_day(&self) -> i64 {
@@ -5060,6 +5069,22 @@ impl World {
         let mut entry = self.block_entities.entry(chunk_pos).or_default();
         for (pos, nbt) in nbt_entries {
             if let Some(be) = block_entity_from_nbt(&nbt) {
+                // Track sculk sensors for fast game_event dispatch.
+                {
+                    use crate::block::entities::calibrated_sculk_sensor::CalibratedSculkSensorBlockEntity;
+                    use crate::block::entities::sculk_sensor::SculkSensorBlockEntity;
+                    if be
+                        .as_any()
+                        .downcast_ref::<SculkSensorBlockEntity>()
+                        .is_some()
+                        || be
+                            .as_any()
+                            .downcast_ref::<CalibratedSculkSensorBlockEntity>()
+                            .is_some()
+                    {
+                        self.sculk_sensors.entry(chunk_pos).or_default().insert(pos);
+                    }
+                }
                 entry.insert(pos, be);
             }
         }
@@ -5083,6 +5108,25 @@ impl World {
             );
         }
 
+        // Track sculk sensors for fast game_event dispatch.
+        {
+            use crate::block::entities::calibrated_sculk_sensor::CalibratedSculkSensorBlockEntity;
+            use crate::block::entities::sculk_sensor::SculkSensorBlockEntity;
+            if block_entity
+                .as_any()
+                .downcast_ref::<SculkSensorBlockEntity>()
+                .is_some()
+                || block_entity
+                    .as_any()
+                    .downcast_ref::<CalibratedSculkSensorBlockEntity>()
+                    .is_some()
+            {
+                self.sculk_sensors
+                    .entry(chunk_pos)
+                    .or_default()
+                    .insert(block_pos);
+            }
+        }
         self.block_entities
             .entry(chunk_pos)
             .or_default()
@@ -5123,6 +5167,14 @@ impl World {
             // Drop the chunk's map once its last block entity is gone.
             self.block_entities
                 .remove_if(&chunk_pos, |_, entities| entities.is_empty());
+            // Remove from sculk sensor index if present.
+            if let Some(mut sensors) = self.sculk_sensors.get_mut(&chunk_pos) {
+                sensors.remove(block_pos);
+                if sensors.is_empty() {
+                    drop(sensors);
+                    self.sculk_sensors.remove(&chunk_pos);
+                }
+            }
             self.level.read_chunk_sync(&chunk_pos, |chunk| {
                 chunk
                     .pending_block_entities
@@ -5164,50 +5216,72 @@ impl World {
     }
 
     /// Dispatch a game event to all in-range sculk listeners.
-    pub async fn game_event(
+    pub fn game_event(
         self: &Arc<Self>,
         event: pumpkin_data::game_event::GameEvent,
         source_position: pumpkin_util::math::vector3::Vector3<f64>,
         context: &crate::world::game_event::vibration::GameEventContext,
     ) {
+        use crate::block::entities::calibrated_sculk_sensor::CalibratedSculkSensorBlockEntity;
+        use crate::block::entities::sculk_sensor::SculkSensorBlockEntity;
         use crate::world::game_event::vibration::SculkSensorVibrationUser;
 
         // Max listener radius across all sculk sensors. Used as a chunk-level
         // pre-filter so we skip entire chunks that can't possibly contain a
-        // sensor in range — avoids iterating block entities for far chunks.
-        // ponytail: hardcoded max; only sculk sensors have listeners today.
+        // sensor in range.
         const MAX_LISTENER_RADIUS: f64 = 16.0;
+        const MAX_LISTENER_RADIUS_SQ: f64 = MAX_LISTENER_RADIUS * MAX_LISTENER_RADIUS;
 
         let active = self.active_chunks.load();
         for chunk_pos in active.iter() {
-            // Cheap AABB distance check: skip chunk if source is more than
-            // MAX_LISTENER_RADIUS from any face of the chunk's 16³ cube.
+            // Cheap AABB distance check on horizontal plane.
             let chunk_min_x = chunk_pos.x as f64 * 16.0;
             let chunk_min_z = chunk_pos.y as f64 * 16.0;
-            // ponytail: sculk sensors care about horizontal distance mostly;
-            // use full 3D AABB to be safe. Y range is the chunk's 16-block section.
-            // We don't know the chunk's Y range cheaply, so skip Y check for now.
             let dx = (chunk_min_x - source_position.x)
                 .max(0.0)
                 .max(source_position.x - (chunk_min_x + 16.0));
             let dz = (chunk_min_z - source_position.z)
                 .max(0.0)
                 .max(source_position.z - (chunk_min_z + 16.0));
-            if dx * dx + dz * dz > MAX_LISTENER_RADIUS * MAX_LISTENER_RADIUS {
+            if dx * dx + dz * dz > MAX_LISTENER_RADIUS_SQ {
                 continue;
             }
-            if let Some(chunk_bes) = self.block_entities.get(chunk_pos) {
-                for (pos, be) in chunk_bes.iter() {
-                    use crate::block::entities::sculk_sensor::SculkSensorBlockEntity;
-                    let Some(sensor) = be.as_any().downcast_ref::<SculkSensorBlockEntity>() else {
+
+            // Use the sculk-sensor-only index instead of iterating all block entities.
+            let Some(sensors) = self.sculk_sensors.get(chunk_pos) else {
+                continue;
+            };
+            let chunk_bes = self.block_entities.get(chunk_pos);
+            for sensor_pos in sensors.iter() {
+                // Y-axis pre-filter: skip if sensor is too far vertically.
+                let dy = (sensor_pos.0.y as f64 + 0.5) - source_position.y;
+                if dy * dy > MAX_LISTENER_RADIUS_SQ {
+                    continue;
+                }
+
+                let Some(chunk_bes) = chunk_bes.as_ref() else {
+                    break;
+                };
+                let Some(be) = chunk_bes.get(sensor_pos) else {
+                    continue;
+                };
+
+                // Determine sensor type and radius.
+                let (listener, radius) =
+                    if let Some(sensor) = be.as_any().downcast_ref::<SculkSensorBlockEntity>() {
+                        (&sensor.listener, 8)
+                    } else if let Some(sensor) = be
+                        .as_any()
+                        .downcast_ref::<CalibratedSculkSensorBlockEntity>()
+                    {
+                        (&sensor.listener, 16)
+                    } else {
                         continue;
                     };
-                    let user = SculkSensorVibrationUser::new(*pos, 8);
-                    sensor
-                        .listener
-                        .handle_game_event(self, event, context, &source_position, &user)
-                        .await;
-                }
+
+                let user = SculkSensorVibrationUser::new(*sensor_pos, radius);
+                // handle_game_event is sync (std::sync::Mutex + atomic game_time).
+                listener.handle_game_event(self, event, context, &source_position, &user);
             }
         }
     }

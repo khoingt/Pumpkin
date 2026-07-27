@@ -12,7 +12,8 @@ use pumpkin_data::game_event::GameEvent;
 use pumpkin_data::{BlockId, BlockStateId};
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector3::Vector3;
-use tokio::sync::Mutex;
+use std::sync::Mutex;
+use std::sync::atomic::Ordering;
 
 use crate::entity::EntityBase;
 use crate::world::World;
@@ -229,14 +230,14 @@ pub struct VibrationListener {
 
 impl VibrationListener {
     #[must_use]
-    pub fn new(position: BlockPos) -> Self {
+    pub const fn new(position: BlockPos) -> Self {
         Self {
             position,
             data: Mutex::new(VibrationData::new()),
         }
     }
 
-    pub async fn handle_game_event(
+    pub fn handle_game_event(
         &self,
         world: &Arc<World>,
         event: GameEvent,
@@ -259,8 +260,8 @@ impl VibrationListener {
         }
 
         let distance = d_sq.sqrt() as f32;
-        let world_tick = world.level_time.lock().await.query_gametime();
-        let mut data = self.data.lock().await;
+        let world_tick = world.game_time.load(Ordering::Relaxed);
+        let mut data = self.data.lock().unwrap();
         if data.has_current_vibration() {
             return false;
         }
@@ -279,15 +280,16 @@ pub struct VibrationTicker;
 
 impl VibrationTicker {
     pub async fn tick(world: &Arc<World>, listener: &VibrationListener, user: &dyn VibrationUser) {
-        let world_tick = world.level_time.lock().await.query_gametime();
-        let mut data = listener.data.lock().await;
-        data.try_select_and_schedule(world_tick, user);
-        let vib = if data.tick_receive() {
-            data.consume_current()
-        } else {
-            None
+        let world_tick = world.game_time.load(Ordering::Relaxed);
+        let vib = {
+            let mut data = listener.data.lock().unwrap();
+            data.try_select_and_schedule(world_tick, user);
+            if data.tick_receive() {
+                data.consume_current()
+            } else {
+                None
+            }
         };
-        drop(data);
 
         let Some(vib) = vib else { return };
 
@@ -371,9 +373,19 @@ impl VibrationUser for SculkSensorVibrationUser {
             let block = state.id.to_block();
 
             if let Some(be) = world.get_block_entity(listener_pos) {
+                use crate::block::entities::calibrated_sculk_sensor::CalibratedSculkSensorBlockEntity;
                 use crate::block::entities::sculk_sensor::SculkSensorBlockEntity;
                 if let Some(sensor) = be.as_any().downcast_ref::<SculkSensorBlockEntity>() {
-                    *sensor.last_vibration_frequency.lock().await = event_frequency;
+                    sensor
+                        .last_vibration_frequency
+                        .store(event_frequency, Ordering::Relaxed);
+                } else if let Some(sensor) = be
+                    .as_any()
+                    .downcast_ref::<CalibratedSculkSensorBlockEntity>()
+                {
+                    sensor
+                        .last_vibration_frequency
+                        .store(event_frequency, Ordering::Relaxed);
                 }
                 world.update_block_entity(&be);
             }

@@ -44,7 +44,7 @@ impl BlockEntity for DaylightDetectorBlockEntity {
 
     fn tick<'a>(&'a self, world: &'a Arc<World>) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async {
-            if world.get_world_age().await % 20 == 0 && world.dimension.has_skylight {
+            if world.get_world_age() % 20 == 0 && world.dimension.has_skylight {
                 Self::update_power(world, &self.position).await;
             }
         })

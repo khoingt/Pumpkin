@@ -6,11 +6,11 @@ use crate::world::game_event::vibration::{
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_util::math::position::BlockPos;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::atomic::{AtomicI32, Ordering};
 
 pub struct SculkSensorBlockEntity {
     pub position: BlockPos,
-    pub last_vibration_frequency: Mutex<i32>,
+    pub last_vibration_frequency: AtomicI32,
     pub listener: VibrationListener,
 }
 
@@ -30,7 +30,7 @@ impl BlockEntity for SculkSensorBlockEntity {
         let last_vibration_frequency = nbt.get_int("last_vibration_frequency").unwrap_or(0);
         Self {
             position,
-            last_vibration_frequency: Mutex::new(last_vibration_frequency),
+            last_vibration_frequency: AtomicI32::new(last_vibration_frequency),
             listener: VibrationListener::new(position),
         }
     }
@@ -42,12 +42,14 @@ impl BlockEntity for SculkSensorBlockEntity {
         Box::pin(async move {
             nbt.put_int(
                 "last_vibration_frequency",
-                *self.last_vibration_frequency.lock().await,
+                self.last_vibration_frequency.load(Ordering::Relaxed),
             );
         })
     }
     fn chunk_data_nbt(&self) -> Option<NbtCompound> {
         let mut nbt = NbtCompound::new();
+        // write_internal is async only for trait compatibility; our write_nbt
+        // body is now purely synchronous (atomic load), so block_on is safe.
         futures::executor::block_on(async {
             self.write_internal(&mut nbt).await;
         });
@@ -73,10 +75,10 @@ impl SculkSensorBlockEntity {
     pub const ID: &'static str = "minecraft:sculk_sensor";
 
     #[must_use]
-    pub fn new(position: BlockPos) -> Self {
+    pub const fn new(position: BlockPos) -> Self {
         Self {
             position,
-            last_vibration_frequency: Mutex::new(0),
+            last_vibration_frequency: AtomicI32::new(0),
             listener: VibrationListener::new(position),
         }
     }
