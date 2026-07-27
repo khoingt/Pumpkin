@@ -111,7 +111,7 @@ jobs:
       - run: rustup update stable && rustup default stable
       - uses: Swatinem/rust-cache@v2
       - name: Run benchmarks
-        run: cargo bench --all-targets --timings --unit-graph -v 2>&1 | tee bench-output.log
+        run: cargo bench --all-targets --timings -v 2>&1 | tee bench-output.log
       - name: Upload benchmark timing report
         if: always()
         uses: actions/upload-artifact@v7
@@ -149,12 +149,12 @@ jobs:
 
       - run: rustup update ${{ matrix.toolchain }} && rustup default ${{ matrix.toolchain }}
       - uses: Swatinem/rust-cache@v2
-      
+
       - name: Build Release
         shell: bash
         run: |
           cargo build --verbose --release
-          
+
       - name: Prepare artifacts
         shell: bash
         run: |
