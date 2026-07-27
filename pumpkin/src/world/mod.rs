@@ -5318,6 +5318,10 @@ impl World {
         const MAX_LISTENER_RADIUS: f64 = 16.0;
         const MAX_LISTENER_RADIUS_SQ: f64 = MAX_LISTENER_RADIUS * MAX_LISTENER_RADIUS;
 
+        if self.sculk_sensors.is_empty() {
+            return;
+        }
+
         let active = self.active_chunks.load();
         for chunk_pos in active.iter() {
             // Cheap AABB distance check on horizontal plane.
