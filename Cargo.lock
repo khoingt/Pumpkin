@@ -2579,6 +2579,7 @@ dependencies = [
  "bytes",
  "colored",
  "console-subscriber",
+ "criterion",
  "crossbeam",
  "dashmap",
  "flate2",

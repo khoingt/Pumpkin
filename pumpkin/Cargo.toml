@@ -115,6 +115,11 @@ indexmap.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+criterion = { workspace = true, features = ["html_reports"] }
+
+[[bench]]
+name = "sculk_sensor"
+harness = false
 
 [features]
 console-subscriber = ["dep:console-subscriber"]
