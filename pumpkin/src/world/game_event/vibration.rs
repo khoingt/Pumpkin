@@ -9,7 +9,9 @@ use pumpkin_data::block_properties::{
     SculkSensorPhase,
 };
 use pumpkin_data::game_event::GameEvent;
-use pumpkin_data::{BlockId, BlockStateId};
+use pumpkin_data::{BlockId, BlockStateId, particle::Particle};
+use pumpkin_protocol::codec::var_int::VarInt;
+use pumpkin_protocol::java::client::play::CParticle;
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector3::Vector3;
 use std::sync::Mutex;
@@ -172,15 +174,19 @@ impl VibrationData {
         self.current_vibration.is_some()
     }
 
-    pub fn try_select_and_schedule(&mut self, world_tick: i64, user: &dyn VibrationUser) {
+    pub fn try_select_and_schedule(
+        &mut self,
+        world_tick: i64,
+        user: &dyn VibrationUser,
+    ) -> Option<(Vector3<f64>, i32)> {
         if self.current_vibration.is_some() {
-            return;
+            return None;
         }
-        let Some(vib) = self.selector.choose(world_tick) else {
-            return;
-        };
+        let vib = self.selector.choose(world_tick)?;
         self.receive_time = user.calculate_travel_time_in_ticks(vib.distance);
+        let particle = (vib.pos, self.receive_time);
         self.current_vibration = Some(vib);
+        Some(particle)
     }
 
     pub const fn tick_receive(&mut self) -> bool {
@@ -280,15 +286,38 @@ pub async fn vibration_tick(
     user: &dyn VibrationUser,
 ) {
     let world_tick = world.game_time.load(Ordering::Relaxed);
-    let vib = {
+    let (particle, vib) = {
         let mut data = listener.data.lock().unwrap();
-        data.try_select_and_schedule(world_tick, user);
-        if data.tick_receive() {
+        let particle = data.try_select_and_schedule(world_tick, user);
+        let vibration = if data.tick_receive() {
             data.consume_current()
         } else {
             None
-        }
+        };
+        (particle, vibration)
     };
+
+    if let Some((origin, arrival_in_ticks)) = particle {
+        let data = vibration_particle_data(listener.position, arrival_in_ticks);
+        let packet = CParticle::new(
+            false,
+            false,
+            origin,
+            Vector3::new(0.0, 0.0, 0.0),
+            0.0,
+            1,
+            VarInt(Particle::Vibration as i32),
+            &data,
+        );
+        for player in world
+            .players
+            .load()
+            .iter()
+            .filter(|player| player.position().squared_distance_to_vec(&origin) <= 1024.0)
+        {
+            player.client.try_enqueue_packet(&packet);
+        }
+    }
 
     let Some(vib) = vib else { return };
 
@@ -301,6 +330,17 @@ pub async fn vibration_tick(
         vib.source_entity.as_ref(),
     )
     .await;
+}
+
+fn vibration_particle_data(destination: BlockPos, arrival_in_ticks: i32) -> Vec<u8> {
+    let arrival_in_ticks = VarInt(arrival_in_ticks);
+    let mut data = Vec::with_capacity(9 + arrival_in_ticks.written_size());
+    data.push(0); // minecraft:block position source
+    data.extend_from_slice(&destination.as_long().to_be_bytes());
+    arrival_in_ticks
+        .encode(&mut data)
+        .expect("writing a VarInt to Vec cannot fail");
+    data
 }
 
 fn is_phase_inactive(state_id: BlockStateId) -> bool {
@@ -389,5 +429,20 @@ impl VibrationUser for SculkSensorVibrationUser {
             }
             SculkSensorBlock::trigger(world, listener_pos, block, power as u8).await;
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pumpkin_util::{math::position::BlockPos, math::vector3::Vector3};
+
+    use super::vibration_particle_data;
+
+    #[test]
+    fn vibration_particle_encodes_block_destination_and_arrival() {
+        assert_eq!(
+            vibration_particle_data(BlockPos(Vector3::new(0, 0, 0)), 300),
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0xAC, 0x02]
+        );
     }
 }

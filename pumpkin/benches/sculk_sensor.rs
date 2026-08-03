@@ -126,7 +126,7 @@ fn bench_vibration_data_tick(c: &mut Criterion) {
                 };
                 data.selector_mut().add_candidate(info);
                 let user = BenchUser;
-                data.try_select_and_schedule(1, &user);
+                let _ = data.try_select_and_schedule(1, &user);
                 data
             },
             |mut data| {
