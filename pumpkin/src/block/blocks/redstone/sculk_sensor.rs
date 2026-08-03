@@ -15,7 +15,7 @@ use pumpkin_world::tick::TickPriority;
 use pumpkin_world::world::BlockFlags;
 
 /// Returns the new phase after a scheduled tick, or `None` if no transition.
-fn next_phase(phase: SculkSensorPhase) -> Option<SculkSensorPhase> {
+const fn next_phase(phase: SculkSensorPhase) -> Option<SculkSensorPhase> {
     match phase {
         SculkSensorPhase::Active => Some(SculkSensorPhase::Cooldown),
         SculkSensorPhase::Cooldown => Some(SculkSensorPhase::Inactive),
