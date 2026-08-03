@@ -5177,8 +5177,8 @@ impl World {
             .or_default()
             .insert(block_pos, block_entity);
 
-        if let Some(nbt) = block_entity_nbt {
-            let mut full_nbt = nbt;
+        if let Some(nbt) = &block_entity_nbt {
+            let mut full_nbt = nbt.clone();
             full_nbt.put_string("id", entity_id);
             full_nbt.put_int("x", block_pos.0.x);
             full_nbt.put_int("y", block_pos.0.y);

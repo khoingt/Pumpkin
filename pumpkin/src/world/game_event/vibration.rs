@@ -18,8 +18,6 @@ use std::sync::atomic::Ordering;
 use crate::entity::EntityBase;
 use crate::world::World;
 
-use super::dist_sq;
-
 pub trait GameEventExt {
     fn default_frequency(&self) -> u32;
 }
@@ -250,7 +248,7 @@ impl VibrationListener {
             f64::from(self.position.0.y) + 0.5,
             f64::from(self.position.0.z) + 0.5,
         );
-        let d_sq = dist_sq(source_position, &listener_center);
+        let d_sq = source_position.squared_distance_to_vec(&listener_center);
         let r = user.get_listener_radius();
         if d_sq > f64::from(r * r) {
             return false;
@@ -276,33 +274,33 @@ impl VibrationListener {
     }
 }
 
-pub struct VibrationTicker;
+pub async fn vibration_tick(
+    world: &Arc<World>,
+    listener: &VibrationListener,
+    user: &dyn VibrationUser,
+) {
+    let world_tick = world.game_time.load(Ordering::Relaxed);
+    let vib = {
+        let mut data = listener.data.lock().unwrap();
+        data.try_select_and_schedule(world_tick, user);
+        if data.tick_receive() {
+            data.consume_current()
+        } else {
+            None
+        }
+    };
 
-impl VibrationTicker {
-    pub async fn tick(world: &Arc<World>, listener: &VibrationListener, user: &dyn VibrationUser) {
-        let world_tick = world.game_time.load(Ordering::Relaxed);
-        let vib = {
-            let mut data = listener.data.lock().unwrap();
-            data.try_select_and_schedule(world_tick, user);
-            if data.tick_receive() {
-                data.consume_current()
-            } else {
-                None
-            }
-        };
+    let Some(vib) = vib else { return };
 
-        let Some(vib) = vib else { return };
-
-        user.on_receive_vibration(
-            world,
-            &listener.position,
-            &vib.game_event,
-            &GameEventContext::default(),
-            vib.distance,
-            vib.source_entity.as_ref(),
-        )
-        .await;
-    }
+    user.on_receive_vibration(
+        world,
+        &listener.position,
+        &vib.game_event,
+        &GameEventContext::default(),
+        vib.distance,
+        vib.source_entity.as_ref(),
+    )
+    .await;
 }
 
 fn is_phase_inactive(state_id: BlockStateId) -> bool {

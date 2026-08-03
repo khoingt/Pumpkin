@@ -14,6 +14,15 @@ use pumpkin_util::math::position::BlockPos;
 use pumpkin_world::tick::TickPriority;
 use pumpkin_world::world::BlockFlags;
 
+/// Returns the new phase after a scheduled tick, or `None` if no transition.
+fn next_phase(phase: SculkSensorPhase) -> Option<SculkSensorPhase> {
+    match phase {
+        SculkSensorPhase::Active => Some(SculkSensorPhase::Cooldown),
+        SculkSensorPhase::Cooldown => Some(SculkSensorPhase::Inactive),
+        SculkSensorPhase::Inactive => None,
+    }
+}
+
 pub struct SculkSensorBlock;
 
 impl BlockMetadata for SculkSensorBlock {
@@ -119,78 +128,40 @@ impl BlockBehaviour for SculkSensorBlock {
     fn on_scheduled_tick<'a>(&'a self, args: OnScheduledTickArgs<'a>) -> BlockFuture<'a, ()> {
         Box::pin(async move {
             let state = args.world.get_block_state(args.position);
-            if args.block.id == BlockId::SCULK_SENSOR {
+            let (new_state_id, schedule_cooldown) = if args.block.id == BlockId::SCULK_SENSOR {
                 let mut props = SculkSensorLikeProperties::from_state_id(state.id, args.block);
-                match props.sculk_sensor_phase {
-                    SculkSensorPhase::Active => {
-                        props.sculk_sensor_phase = SculkSensorPhase::Cooldown;
-                        props.power = 0;
-                        args.world
-                            .set_block_state(
-                                args.position,
-                                props.to_state_id(args.block),
-                                BlockFlags::NOTIFY_ALL,
-                            )
-                            .await;
-                        args.world.schedule_block_tick(
-                            args.block,
-                            *args.position,
-                            10,
-                            TickPriority::Normal,
-                        );
-                        args.world.update_neighbors(args.position, None).await;
-                    }
-                    SculkSensorPhase::Cooldown => {
-                        props.sculk_sensor_phase = SculkSensorPhase::Inactive;
-                        props.power = 0;
-                        args.world
-                            .set_block_state(
-                                args.position,
-                                props.to_state_id(args.block),
-                                BlockFlags::NOTIFY_ALL,
-                            )
-                            .await;
-                        args.world.update_neighbors(args.position, None).await;
-                    }
-                    SculkSensorPhase::Inactive => {}
-                }
+                let Some(new_phase) = next_phase(props.sculk_sensor_phase) else {
+                    return;
+                };
+                let cooldown = new_phase == SculkSensorPhase::Cooldown;
+                props.sculk_sensor_phase = new_phase;
+                props.power = 0;
+                (props.to_state_id(args.block), cooldown)
             } else if args.block.id == BlockId::CALIBRATED_SCULK_SENSOR {
                 let mut props =
                     CalibratedSculkSensorLikeProperties::from_state_id(state.id, args.block);
-                match props.sculk_sensor_phase {
-                    SculkSensorPhase::Active => {
-                        props.sculk_sensor_phase = SculkSensorPhase::Cooldown;
-                        props.power = 0;
-                        args.world
-                            .set_block_state(
-                                args.position,
-                                props.to_state_id(args.block),
-                                BlockFlags::NOTIFY_ALL,
-                            )
-                            .await;
-                        args.world.schedule_block_tick(
-                            args.block,
-                            *args.position,
-                            10,
-                            TickPriority::Normal,
-                        );
-                        args.world.update_neighbors(args.position, None).await;
-                    }
-                    SculkSensorPhase::Cooldown => {
-                        props.sculk_sensor_phase = SculkSensorPhase::Inactive;
-                        props.power = 0;
-                        args.world
-                            .set_block_state(
-                                args.position,
-                                props.to_state_id(args.block),
-                                BlockFlags::NOTIFY_ALL,
-                            )
-                            .await;
-                        args.world.update_neighbors(args.position, None).await;
-                    }
-                    SculkSensorPhase::Inactive => {}
-                }
+                let Some(new_phase) = next_phase(props.sculk_sensor_phase) else {
+                    return;
+                };
+                let cooldown = new_phase == SculkSensorPhase::Cooldown;
+                props.sculk_sensor_phase = new_phase;
+                props.power = 0;
+                (props.to_state_id(args.block), cooldown)
+            } else {
+                return;
+            };
+            args.world
+                .set_block_state(args.position, new_state_id, BlockFlags::NOTIFY_ALL)
+                .await;
+            if schedule_cooldown {
+                args.world.schedule_block_tick(
+                    args.block,
+                    *args.position,
+                    10,
+                    TickPriority::Normal,
+                );
             }
+            args.world.update_neighbors(args.position, None).await;
         })
     }
 }
