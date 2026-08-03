@@ -347,7 +347,6 @@ impl World {
         for pos in &active_chunks {
             if self.level.is_chunk_loaded(pos) {
                 spawnable_chunks += 1;
-                self.migrate_pending_block_entities(*pos);
             }
         }
 
@@ -5097,7 +5096,8 @@ impl World {
                     .pending_block_entities
                     .lock()
                     .unwrap()
-                    .remove(block_pos)
+                    .get(block_pos)
+                    .cloned()
             })
             .flatten()?;
         let entity = block_entity_from_nbt(&nbt)?;
@@ -5111,24 +5111,20 @@ impl World {
         let result = self
             .level
             .read_chunk_sync(&chunk_pos, |chunk| {
-                // Only drain entries that don't already have a live entity.
-                // Runtime updates via update_block_entity write NBT into pending
-                // for disk persistence — those must survive until the save.
-                let mut pending = chunk.pending_block_entities.lock().unwrap();
+                // Materialize entries that don't already have a live entity.
+                // Keep their NBT in pending because chunk serialization uses it
+                // as the persisted snapshot.
+                let pending = chunk.pending_block_entities.lock().unwrap();
                 let has_scheduled_ticks =
                     chunk.block_ticks.has_ticks() || chunk.fluid_ticks.has_ticks();
                 if pending.is_empty() {
                     return (Vec::new(), has_scheduled_ticks);
                 }
                 let live = self.block_entities.get(&chunk_pos);
-                let keys_to_extract: Vec<BlockPos> = pending
-                    .keys()
-                    .filter(|pos| live.as_ref().is_none_or(|e| !e.contains_key(pos)))
-                    .copied()
-                    .collect();
-                let nbt_entries: Vec<(BlockPos, NbtCompound)> = keys_to_extract
+                let nbt_entries: Vec<(BlockPos, NbtCompound)> = pending
                     .iter()
-                    .filter_map(|pos| pending.remove(pos).map(|nbt| (*pos, nbt)))
+                    .filter(|(pos, _)| live.as_ref().is_none_or(|e| !e.contains_key(pos)))
+                    .map(|(pos, nbt)| (*pos, nbt.clone()))
                     .collect();
                 (nbt_entries, has_scheduled_ticks)
             })
@@ -5273,30 +5269,6 @@ impl World {
                     .remove(block_pos);
                 chunk.mark_dirty(true);
             });
-        }
-    }
-
-    fn migrate_pending_block_entities(&self, chunk_pos: Vector2<i32>) {
-        let positions: Vec<BlockPos> = self
-            .level
-            .read_chunk_sync(&chunk_pos, |chunk| {
-                chunk
-                    .pending_block_entities
-                    .lock()
-                    .unwrap()
-                    .keys()
-                    .copied()
-                    .collect()
-            })
-            .unwrap_or_default();
-        for pos in positions {
-            let already_loaded = self
-                .block_entities
-                .get(&chunk_pos)
-                .is_some_and(|m| m.contains_key(&pos));
-            if !already_loaded && let Some(entity) = self.get_block_entity(&pos) {
-                self.update_block_entity(&entity);
-            }
         }
     }
 
