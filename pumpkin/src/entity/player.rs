@@ -122,6 +122,14 @@ const MAX_PREVIOUS_MESSAGES: u8 = 20; // Vanilla: 20
 
 pub const DATA_VERSION: i32 = 4903; // 26.2
 
+/// Food exhaustion applied for every block a player mines.
+///
+/// Vanilla: `Block#playerDestroy` calls `player.causeFoodExhaustion(0.005F)`.
+/// `ServerPlayerGameMode#destroyBlock` only reaches `playerDestroy` for
+/// non-creative players holding a tool that can harvest the block, so callers
+/// must apply the same gating.
+pub const MINE_BLOCK_EXHAUSTION: f32 = 0.005; // Vanilla: 0.005F
+
 struct HeapNode(i32, Vector2<i32>, Weak<ChunkData>);
 
 impl Eq for HeapNode {}
@@ -246,12 +254,17 @@ impl ChunkManager {
             let new_level = ChunkLoading::get_level_from_view_distance(view_distance);
             lock.add_ticket(center, new_level);
 
-            if old_center != center || old_view_distance != view_distance {
+            let sim_dist = self.world.server.upgrade().map_or(10, |s| {
+                s.advanced_config.networking.java.simulation_distance.get()
+            });
+            let sim_level = ChunkLoading::get_level_from_simulation_distance(sim_dist);
+            lock.add_ticket(center, sim_level);
+
+            if (old_center != center || old_view_distance != view_distance) && old_view_distance > 0
+            {
                 let old_level = ChunkLoading::get_level_from_view_distance(old_view_distance);
-                // Don't remove if it would be the same ticket
-                if old_center != center || old_level != new_level {
-                    lock.remove_ticket(old_center, old_level);
-                }
+                lock.remove_ticket(old_center, old_level);
+                lock.remove_ticket(old_center, sim_level);
             }
             lock.send_change();
         };
@@ -473,6 +486,7 @@ pub struct Player {
     pub last_food_saturation: AtomicBool,
     /// The player's permission level.
     pub permission_lvl: AtomicCell<PermissionLvl>,
+    pub subscribed_debug_sample: AtomicBool,
     /// Whether the client has reported that it has loaded.
     pub client_loaded: AtomicBool,
     pub bedrock_spawned: AtomicBool,
@@ -706,6 +720,7 @@ impl Player {
             last_sent_health: AtomicI32::new(-1),
             last_sent_food: AtomicU8::new(0),
             last_food_saturation: AtomicBool::new(true),
+            subscribed_debug_sample: AtomicBool::new(false),
             has_played_before: AtomicBool::new(false),
             chat_session: Arc::new(Mutex::new(ChatSession::default())), // Placeholder value until the player actually sets their session id
             signature_cache: Mutex::new(MessageCache::default()),
@@ -883,7 +898,7 @@ impl Player {
         let level = &world.level;
 
         // Decrement the value of watched chunks
-        let chunks_to_clean = level.mark_chunks_as_not_watched(&radial_chunks).await;
+        let chunks_to_clean = level.mark_chunks_as_not_watched(radial_chunks).await;
         // Remove chunks with no watchers from the cache
         if !chunks_to_clean.is_empty() {
             world.remove_entities_in_chunks(&chunks_to_clean).await;
@@ -930,7 +945,11 @@ impl Player {
 
         {
             let stack = item_stack.lock().await;
-            if let Some(modifiers) = stack.get_data_component::<AttributeModifiersImpl>() {
+            if stack.is_empty() {
+                // Vanilla fist: base_attack_damage = -1.0, base_attack_speed = -2.4
+                add_damage = -1.0;
+                add_speed = -2.4;
+            } else if let Some(modifiers) = stack.get_data_component::<AttributeModifiersImpl>() {
                 for item_mod in modifiers.attribute_modifiers.iter() {
                     if item_mod.operation == Operation::AddValue {
                         if item_mod.id == "minecraft:base_attack_damage" {
@@ -997,7 +1016,7 @@ impl Player {
         }
 
         // Modify the added damage based on the multiplier.
-        let mut damage = base_damage + add_damage * damage_multiplier;
+        let mut damage = (base_damage + add_damage) * damage_multiplier;
         damage += extra_ench_damage * attack_cooldown_progress;
 
         if let Some(strength) = self
@@ -1142,7 +1161,7 @@ impl Player {
                 _ => {}
             }
             if config.knockback {
-                combat::handle_knockback(attacker_entity, victim_entity, knockback_strength);
+                combat::handle_knockback(attacker_entity, victim.as_ref(), knockback_strength);
             }
         }
 
@@ -1161,6 +1180,11 @@ impl Player {
             Self::combat_weapon_durability_cost(&stack)
         })
         .await;
+
+        // Vanilla `Player#attack` ends the successful-hit branch with
+        // `causeFoodExhaustion(0.1F)`. Only landed hits exhaust; the miss/no-damage
+        // case returned early above.
+        self.add_exhaustion(0.1).await;
 
         if config.swing {}
     }
@@ -2461,9 +2485,12 @@ impl Player {
     pub async fn unload_watched_chunks(&self, world: &World) {
         let radial_chunks = self.watched_section.load().all_chunks_within();
         let level = &world.level;
-        let chunks_to_clean = level.mark_chunks_as_not_watched(&radial_chunks).await;
-        // level.clean_chunks(&chunks_to_clean).await;
-        for chunk in chunks_to_clean {
+        let chunks_to_clean = level.mark_chunks_as_not_watched(radial_chunks).await;
+        if !chunks_to_clean.is_empty() {
+            world.remove_entities_in_chunks(&chunks_to_clean).await;
+            level.clean_entity_chunks(&chunks_to_clean);
+        }
+        for chunk in &chunks_to_clean {
             self.client
                 .enqueue_packet(&CUnloadChunk::new(chunk.x, chunk.y))
                 .await;
@@ -2980,16 +3007,28 @@ impl Player {
         let config = self.config.load();
         self.living_entity.entity.send_meta_data(
             &[
+                // v26.x
                 Metadata::new(
                     TrackedData::PLAYER_MODE_CUSTOMISATION,
                     MetaDataType::BYTE,
                     config.skin_parts,
                 ),
-                // Metadata::new(
-                //     TrackedData::DATA_MAIN_ARM_ID,
-                //     MetaDataType::ARM,
-                //     VarInt(config.main_hand as u8 as i32),
-                // ),
+                Metadata::new(
+                    TrackedData::PLAYER_MAIN_HAND,
+                    MetaDataType::HUMANOID_ARM,
+                    config.main_hand as u8,
+                ),
+                // v1.21.x
+                Metadata::new(
+                    TrackedData::PLAYER_MODE_CUSTOMIZATION_ID,
+                    MetaDataType::BYTE,
+                    config.skin_parts,
+                ),
+                Metadata::new(
+                    TrackedData::MAIN_ARM_ID,
+                    MetaDataType::BYTE,
+                    config.main_hand as u8,
+                ),
             ],
             None,
         );
@@ -4069,7 +4108,13 @@ impl Player {
         // Check offhand first
         let stack = inventory.get_stack(PlayerInventory::OFF_HAND_SLOT).await;
         let item = stack.lock().await;
-        if item.item.id == Item::ARROW.id && item.item_count > 0 {
+        if matches!(
+            item.item.id,
+            id if id == Item::ARROW.id
+                || id == Item::TIPPED_ARROW.id
+                || id == Item::SPECTRAL_ARROW.id
+        ) && item.item_count > 0
+        {
             return Some(PlayerInventory::OFF_HAND_SLOT);
         }
         drop(item);
@@ -4078,7 +4123,13 @@ impl Player {
         for slot in 0..PlayerInventory::MAIN_SIZE {
             let stack = inventory.get_stack(slot).await;
             let item = stack.lock().await;
-            if item.item.id == Item::ARROW.id && item.item_count > 0 {
+            if matches!(
+                item.item.id,
+                id if id == Item::ARROW.id
+                    || id == Item::TIPPED_ARROW.id
+                    || id == Item::SPECTRAL_ARROW.id
+            ) && item.item_count > 0
+            {
                 return Some(slot);
             }
         }
@@ -4268,6 +4319,21 @@ impl NBTStorage for Player {
             // Store food level, saturation, exhaustion, and tick timer
             self.hunger_manager.write_nbt(nbt).await;
 
+            nbt.put_int(
+                "AirSupply",
+                self.breath_manager
+                    .air_supply
+                    .load(Ordering::Relaxed)
+                    .clamp(0, super::breath::MAX_AIR),
+            );
+            nbt.put_int(
+                "DrowningTick",
+                self.breath_manager
+                    .drowning_tick
+                    .load(Ordering::Relaxed)
+                    .clamp(0, super::breath::DROWNING_INTERVAL - 1),
+            );
+
             nbt.put_string(
                 "Dimension",
                 self.world().dimension.minecraft_name.to_string(),
@@ -4319,6 +4385,18 @@ impl NBTStorage for Player {
             );
 
             self.hunger_manager.read_nbt(nbt).await;
+
+            if let Some(air) = nbt.get_int("AirSupply") {
+                self.breath_manager
+                    .air_supply
+                    .store(air.clamp(0, super::breath::MAX_AIR), Ordering::Relaxed);
+            }
+            if let Some(tick) = nbt.get_int("DrowningTick") {
+                self.breath_manager.drowning_tick.store(
+                    tick.clamp(0, super::breath::DROWNING_INTERVAL - 1),
+                    Ordering::Relaxed,
+                );
+            }
 
             // Load any saved spawnpoint data (SpawnX/SpawnY/SpawnZ, SpawnDimension, SpawnForced)
             if let (Some(x), Some(y), Some(z)) = (
