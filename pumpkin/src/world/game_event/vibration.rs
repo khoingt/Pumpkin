@@ -9,7 +9,8 @@ use pumpkin_data::block_properties::{
     SculkSensorPhase,
 };
 use pumpkin_data::game_event::GameEvent;
-use pumpkin_data::{BlockId, BlockStateId, particle::Particle};
+use pumpkin_data::tag::Taggable;
+use pumpkin_data::{BlockDirection, BlockId, BlockStateId, particle::Particle, tag};
 use pumpkin_protocol::codec::var_int::VarInt;
 use pumpkin_protocol::java::client::play::CParticle;
 use pumpkin_util::math::position::BlockPos;
@@ -76,13 +77,20 @@ pub fn get_redstone_strength_for_distance(d: f32, listener_radius: i32) -> i32 {
 #[derive(Clone, Default)]
 pub struct GameEventContext {
     source_entity: Option<Arc<dyn EntityBase>>,
+    affected_state: Option<BlockStateId>,
 }
 
 impl GameEventContext {
     pub fn of_entity(entity: &Arc<dyn EntityBase>) -> Self {
         Self {
             source_entity: Some(Arc::clone(entity)),
+            affected_state: None,
         }
+    }
+    #[must_use]
+    pub const fn with_affected_state(mut self, state: BlockStateId) -> Self {
+        self.affected_state = Some(state);
+        self
     }
     #[must_use]
     pub fn source_entity(&self) -> Option<&Arc<dyn EntityBase>> {
@@ -242,7 +250,7 @@ impl VibrationListener {
         }
     }
 
-    pub fn handle_game_event(
+    pub async fn handle_game_event(
         &self,
         world: &Arc<World>,
         event: GameEvent,
@@ -258,6 +266,14 @@ impl VibrationListener {
         let d_sq = source_position.squared_distance_to_vec(&listener_center);
         let r = user.get_listener_radius();
         if d_sq > f64::from(r * r) {
+            return false;
+        }
+        if self.data.lock().unwrap().has_current_vibration() {
+            return false;
+        }
+        if !is_valid_vibration(event, context)
+            || is_occluded(world, source_position, &listener_center).await
+        {
             return false;
         }
         if !user.can_receive_vibration(
@@ -287,16 +303,81 @@ impl VibrationListener {
     }
 }
 
+fn is_valid_vibration(event: GameEvent, context: &GameEventContext) -> bool {
+    if event.default_frequency() == 0 {
+        return false;
+    }
+    if let Some(entity) = context.source_entity()
+        && (entity.is_spectator()
+            || entity.dampens_vibrations()
+            || (entity.get_entity().is_sneaking() && is_ignored_when_sneaking(event)))
+    {
+        return false;
+    }
+    context.affected_state.is_none_or(|state| {
+        !state
+            .to_block()
+            .has_tag(&tag::Block::MINECRAFT_DAMPENS_VIBRATIONS)
+    })
+}
+
+const fn is_ignored_when_sneaking(event: GameEvent) -> bool {
+    matches!(
+        event,
+        GameEvent::HitGround
+            | GameEvent::ProjectileShoot
+            | GameEvent::Step
+            | GameEvent::Swim
+            | GameEvent::ItemInteractStart
+            | GameEvent::ItemInteractFinish
+    )
+}
+
+async fn is_occluded(
+    world: &Arc<World>,
+    source: &Vector3<f64>,
+    destination: &Vector3<f64>,
+) -> bool {
+    let from = BlockPos::floored_v(*source).to_centered_f64();
+    let to = BlockPos::floored_v(*destination).to_centered_f64();
+    for direction in BlockDirection::all() {
+        let offset = direction.to_offset().to_f64() * 1.0e-5;
+        if world
+            .raycast(from + offset, to, async |pos, world| {
+                world
+                    .get_block(pos)
+                    .has_tag(&tag::Block::MINECRAFT_OCCLUDES_VIBRATION_SIGNALS)
+            })
+            .await
+            .is_none()
+        {
+            return false;
+        }
+    }
+    true
+}
+
 pub async fn vibration_tick(
     world: &Arc<World>,
     listener: &VibrationListener,
     user: &dyn VibrationUser,
 ) {
     let world_tick = world.game_time.load(Ordering::Relaxed);
+    let listener_chunk = listener.position.chunk_position();
+    let active_chunks = world.active_chunks.load();
+    let adjacent_chunks_ticking = (-1..=1).all(|x| {
+        (-1..=1).all(|z| {
+            let chunk = pumpkin_util::math::vector2::Vector2::new(
+                listener_chunk.x + x,
+                listener_chunk.y + z,
+            );
+            active_chunks.contains(&chunk) && world.level.is_chunk_loaded(&chunk)
+        })
+    });
     let (particle, vib) = {
         let mut data = listener.data.lock().unwrap();
         let particle = data.try_select_and_schedule(world_tick, user);
-        let vibration = if data.tick_receive() {
+        let vibration = if data.tick_receive() && adjacent_chunks_ticking {
             data.consume_current()
         } else {
             None
@@ -397,9 +478,6 @@ impl VibrationUser for SculkSensorVibrationUser {
         if !is_phase_inactive(state.id) {
             return false;
         }
-        if event.default_frequency() == 0 {
-            return false;
-        }
         true
     }
     fn on_receive_vibration<'a>(
@@ -447,9 +525,12 @@ impl VibrationUser for SculkSensorVibrationUser {
 
 #[cfg(test)]
 mod tests {
+    use pumpkin_data::{Block, game_event::GameEvent};
     use pumpkin_util::{math::position::BlockPos, math::vector3::Vector3};
 
-    use super::vibration_particle_data;
+    use super::{
+        GameEventContext, is_ignored_when_sneaking, is_valid_vibration, vibration_particle_data,
+    };
 
     #[test]
     fn vibration_particle_encodes_block_destination_and_arrival() {
@@ -457,5 +538,23 @@ mod tests {
             vibration_particle_data(BlockPos(Vector3::new(0, 0, 0)), 300),
             [0, 0, 0, 0, 0, 0, 0, 0, 0, 0xAC, 0x02]
         );
+    }
+
+    #[test]
+    fn shared_vibration_filters_use_vanilla_tags() {
+        assert!(is_valid_vibration(
+            GameEvent::Step,
+            &GameEventContext::default()
+        ));
+        assert!(!is_valid_vibration(
+            GameEvent::JukeboxPlay,
+            &GameEventContext::default()
+        ));
+        assert!(!is_valid_vibration(
+            GameEvent::BlockPlace,
+            &GameEventContext::default().with_affected_state(Block::WHITE_WOOL.default_state.id)
+        ));
+        assert!(is_ignored_when_sneaking(GameEvent::ProjectileShoot));
+        assert!(!is_ignored_when_sneaking(GameEvent::ProjectileLand));
     }
 }

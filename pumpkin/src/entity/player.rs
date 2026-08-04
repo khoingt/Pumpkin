@@ -124,6 +124,36 @@ fn emits_container_game_events(block: &Block) -> bool {
         || block.has_tag(&tag::Block::C_BARRELS)
         || block.has_tag(&tag::Block::MINECRAFT_SHULKER_BOXES)
 }
+
+fn is_support_candidate(state: &BlockState, pos: BlockPos, footprint: &BoundingBox) -> bool {
+    state
+        .get_block_collision_shapes()
+        .any(|shape| shape.at_pos(pos).intersects(footprint))
+}
+
+#[cfg(test)]
+mod supporting_block_tests {
+    use super::*;
+
+    #[test]
+    fn short_blocks_beside_wool_do_not_support_player_feet() {
+        let footprint = BoundingBox::new(
+            Vector3::new(0.75, 1.0 - 1.0e-6, 0.2),
+            Vector3::new(1.35, 1.0, 0.8),
+        );
+
+        assert!(is_support_candidate(
+            Block::WHITE_WOOL.default_state,
+            BlockPos::new(0, 0, 0),
+            &footprint,
+        ));
+        assert!(!is_support_candidate(
+            Block::SCULK_SENSOR.default_state,
+            BlockPos::new(1, 0, 0),
+            &footprint,
+        ));
+    }
+}
 const MAX_PREVIOUS_MESSAGES: u8 = 20; // Vanilla: 20
 
 pub const DATA_VERSION: i32 = 4903; // 26.2
@@ -3649,11 +3679,13 @@ impl Player {
             && emits_container_game_events(self.world().get_block(&pos))
         {
             let source: Arc<dyn EntityBase> = self.clone();
-            self.world().game_event(
-                pumpkin_data::game_event::GameEvent::ContainerClose,
-                pos.to_centered_f64(),
-                &crate::world::game_event::vibration::GameEventContext::of_entity(&source),
-            );
+            self.world()
+                .game_event(
+                    pumpkin_data::game_event::GameEvent::ContainerClose,
+                    pos.to_centered_f64(),
+                    &crate::world::game_event::vibration::GameEventContext::of_entity(&source),
+                )
+                .await;
         }
 
         if let Some(server) = self.living_entity.entity.world.load().server.upgrade() {
@@ -3781,11 +3813,13 @@ impl Player {
                 && emits_container_game_events(self.world().get_block(&pos))
             {
                 let source: Arc<dyn EntityBase> = self.clone();
-                self.world().game_event(
-                    pumpkin_data::game_event::GameEvent::ContainerOpen,
-                    pos.to_centered_f64(),
-                    &crate::world::game_event::vibration::GameEventContext::of_entity(&source),
-                );
+                self.world()
+                    .game_event(
+                        pumpkin_data::game_event::GameEvent::ContainerOpen,
+                        pos.to_centered_f64(),
+                        &crate::world::game_event::vibration::GameEventContext::of_entity(&source),
+                    )
+                    .await;
             }
             Some(self.screen_handler_sync_id.load(Ordering::Relaxed))
         } else {
@@ -4214,7 +4248,7 @@ impl Player {
         }
     }
 
-    /// Returns the main non-air `BlockPos` underneath the player.
+    /// Returns the main supporting `BlockPos` underneath the player.
     pub fn get_supporting_block_pos(&self) -> Option<BlockPos> {
         let entity = self.get_entity();
         let entity_pos = entity.pos.load();
@@ -4237,8 +4271,7 @@ impl Player {
         for pos in BlockPos::iterate(min_pos, max_pos) {
             let (_, state) = world.get_block_and_state(&pos);
 
-            // Only consider physical blocks
-            if state.is_air() {
+            if !is_support_candidate(state, pos, &footprint) {
                 continue;
             }
 
@@ -4285,7 +4318,7 @@ impl Player {
         );
 
         let state = world.get_block_state(&fallback_pos);
-        (!state.is_air()).then_some(fallback_pos)
+        is_support_candidate(state, fallback_pos, &footprint).then_some(fallback_pos)
     }
 
     pub async fn get_command_source(self: &Arc<Self>, server: &Arc<Server>) -> CommandSource {

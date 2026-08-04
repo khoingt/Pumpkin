@@ -4,6 +4,8 @@ use core::f32;
 use pumpkin_data::data_component_impl::DamageResistantImpl;
 use pumpkin_data::data_component_impl::DamageResistantType;
 use pumpkin_data::item_stack::ItemStack;
+use pumpkin_data::tag;
+use pumpkin_data::tag::Taggable;
 use pumpkin_data::{damage::DamageType, meta_data_type::MetaDataType, tracked_data::TrackedData};
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_protocol::bedrock::client::CAddItemActor;
@@ -37,10 +39,14 @@ pub struct ItemEntity {
     health: AtomicF32,
     never_despawn: AtomicBool,
     never_pickup: AtomicBool,
+    dampens_vibrations: AtomicBool,
 }
 
 impl ItemEntity {
     pub fn new(entity: Entity, item_stack: ItemStack) -> Self {
+        let dampens_vibrations = item_stack
+            .item
+            .has_tag(&tag::Item::MINECRAFT_DAMPENS_VIBRATIONS);
         entity.velocity.store(Vector3::new(
             rand::random::<f64>().mul_add(0.2, -0.1),
             0.2,
@@ -63,6 +69,7 @@ impl ItemEntity {
             health: AtomicF32::new(5.0),
             never_despawn: AtomicBool::new(false),
             never_pickup: AtomicBool::new(false),
+            dampens_vibrations: AtomicBool::new(dampens_vibrations),
         }
     }
 
@@ -72,6 +79,9 @@ impl ItemEntity {
         velocity: Vector3<f64>,
         pickup_delay: u8,
     ) -> Self {
+        let dampens_vibrations = item_stack
+            .item
+            .has_tag(&tag::Item::MINECRAFT_DAMPENS_VIBRATIONS);
         entity.velocity.store(velocity);
         entity.yaw.store(rand::random::<f32>() * 360.0);
 
@@ -90,6 +100,7 @@ impl ItemEntity {
             health: AtomicF32::new(5.0),
             never_despawn: AtomicBool::new(false),
             never_pickup: AtomicBool::new(false),
+            dampens_vibrations: AtomicBool::new(dampens_vibrations),
         }
     }
 
@@ -104,6 +115,7 @@ impl ItemEntity {
             health: AtomicF32::new(5.0),
             never_despawn: AtomicBool::new(false),
             never_pickup: AtomicBool::new(false),
+            dampens_vibrations: AtomicBool::new(false),
         }
     }
 
@@ -414,6 +426,10 @@ impl NBTStorage for ItemEntity {
             if let Some(item_compound) = nbt.get_compound("Item")
                 && let Some(stack) = ItemStack::read_item_stack(item_compound)
             {
+                self.dampens_vibrations.store(
+                    stack.item.has_tag(&tag::Item::MINECRAFT_DAMPENS_VIBRATIONS),
+                    Ordering::Relaxed,
+                );
                 *self.item_stack.lock().await = stack;
             }
 
@@ -435,6 +451,10 @@ impl NBTStorage for ItemEntity {
 }
 
 impl EntityBase for ItemEntity {
+    fn dampens_vibrations(&self) -> bool {
+        self.dampens_vibrations.load(Ordering::Relaxed)
+    }
+
     fn tick<'a>(
         &'a self,
         caller: &'a Arc<dyn EntityBase>,

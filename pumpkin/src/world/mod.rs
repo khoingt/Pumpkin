@@ -3332,7 +3332,8 @@ impl World {
             pumpkin_data::game_event::GameEvent::Explode,
             position,
             &crate::world::game_event::vibration::GameEventContext::default(),
-        );
+        )
+        .await;
         let particle = if power < 2.0 {
             Particle::Explosion
         } else {
@@ -4225,7 +4226,8 @@ impl World {
                 pumpkin_data::game_event::GameEvent::ProjectileShoot,
                 entity.get_entity().pos.load(),
                 &crate::world::game_event::vibration::GameEventContext::of_entity(&entity),
-            );
+            )
+            .await;
         }
         self.add_entity_silent(entity).await;
     }
@@ -4638,18 +4640,24 @@ impl World {
 
             let broken_state_id = self.set_block_state(position, new_state_id, flags).await;
 
-            let context = cause.as_ref().map_or_else(
-                crate::world::game_event::vibration::GameEventContext::default,
-                |player| {
-                    let source_entity: Arc<dyn EntityBase> = player.clone();
-                    crate::world::game_event::vibration::GameEventContext::of_entity(&source_entity)
-                },
-            );
+            let context = cause
+                .as_ref()
+                .map_or_else(
+                    crate::world::game_event::vibration::GameEventContext::default,
+                    |player| {
+                        let source_entity: Arc<dyn EntityBase> = player.clone();
+                        crate::world::game_event::vibration::GameEventContext::of_entity(
+                            &source_entity,
+                        )
+                    },
+                )
+                .with_affected_state(broken_state_id);
             self.game_event(
                 pumpkin_data::game_event::GameEvent::BlockDestroy,
                 position.to_centered_f64(),
                 &context,
-            );
+            )
+            .await;
 
             // Close container screens for any players viewing this block
             self.close_container_screens_at(position).await;
@@ -5332,7 +5340,7 @@ impl World {
     }
 
     /// Dispatch a game event to all in-range sculk listeners.
-    pub fn game_event(
+    pub async fn game_event(
         self: &Arc<Self>,
         event: pumpkin_data::game_event::GameEvent,
         source_position: pumpkin_util::math::vector3::Vector3<f64>,
@@ -5400,8 +5408,9 @@ impl World {
                     };
 
                 let user = SculkSensorVibrationUser::new(*sensor_pos, radius);
-                // handle_game_event is sync (std::sync::Mutex + atomic game_time).
-                listener.handle_game_event(self, event, context, &source_position, &user);
+                listener
+                    .handle_game_event(self, event, context, &source_position, &user)
+                    .await;
             }
         }
     }
@@ -5508,11 +5517,13 @@ impl World {
 
         let mut block = BlockPos::floored(from.x, from.y, from.z);
 
-        let (collision, direction) = self.ray_outline_check(&block, from, to);
-        if let Some(dir) = direction
-            && collision
-        {
-            return Some((block, dir));
+        if hit_check(&block, self).await {
+            let (collision, direction) = self.ray_outline_check(&block, from, to);
+            if let Some(dir) = direction
+                && collision
+            {
+                return Some((block, dir));
+            }
         }
 
         let difference = to.sub(&from);

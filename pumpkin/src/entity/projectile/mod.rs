@@ -221,7 +221,7 @@ impl ThrownItemEntity {
                 return;
             }
 
-            emit_projectile_land(caller, &h);
+            emit_projectile_land(caller, &h).await;
 
             // Just trigger hit effects and remove
             caller.on_hit(h).await;
@@ -336,16 +336,22 @@ pub enum ProjectileHit {
     },
 }
 
-pub fn emit_projectile_land(projectile: &Arc<dyn EntityBase>, hit: &ProjectileHit) {
-    let pos = match hit {
-        ProjectileHit::Block { pos, .. } => pos.to_centered_f64(),
-        ProjectileHit::Entity { hit_pos, .. } => *hit_pos,
+pub async fn emit_projectile_land(projectile: &Arc<dyn EntityBase>, hit: &ProjectileHit) {
+    let world = projectile.get_entity().world.load();
+    let (pos, context) = match hit {
+        ProjectileHit::Block { pos, .. } => (
+            pos.to_centered_f64(),
+            crate::world::game_event::vibration::GameEventContext::of_entity(projectile)
+                .with_affected_state(world.get_block_state(pos).id),
+        ),
+        ProjectileHit::Entity { hit_pos, .. } => (
+            *hit_pos,
+            crate::world::game_event::vibration::GameEventContext::of_entity(projectile),
+        ),
     };
-    projectile.get_entity().world.load().game_event(
-        GameEvent::ProjectileLand,
-        pos,
-        &crate::world::game_event::vibration::GameEventContext::of_entity(projectile),
-    );
+    world
+        .game_event(GameEvent::ProjectileLand, pos, &context)
+        .await;
 }
 
 impl ProjectileHit {

@@ -500,6 +500,10 @@ pub trait Mob: EntityBase + Send + Sync {
         true
     }
 
+    fn dampens_vibrations(&self) -> bool {
+        false
+    }
+
     fn get_mob_gravity(&self) -> f64 {
         self.get_mob_entity().living_entity.get_gravity()
     }
@@ -560,6 +564,10 @@ pub trait Mob: EntityBase + Send + Sync {
     fn mob_set_variant_name(&self, _name: &str) {}
 }
 impl<T: Mob + Send + 'static> EntityBase for T {
+    fn dampens_vibrations(&self) -> bool {
+        Mob::dampens_vibrations(self)
+    }
+
     fn init_data_tracker(&self) -> EntityBaseFuture<'_, ()> {
         Box::pin(async move {
             self.mob_init_data_tracker().await;
