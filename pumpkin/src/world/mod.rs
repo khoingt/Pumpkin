@@ -958,12 +958,29 @@ impl World {
                 let p_cache = players_cache.clone();
 
                 tasks.spawn(async move {
-                    e_clone.get_entity().age.fetch_add(1, Relaxed);
+                    let first_tick = e_clone.get_entity().age.fetch_add(1, Relaxed) == 0;
                     e_clone.tick(&e_clone, &s_clone).await;
 
                     let entity_inner = e_clone.get_entity();
                     let entity_pos = entity_inner.pos.load();
                     let entity_bb = entity_inner.bounding_box.load();
+
+                    // Vanilla emits PROJECTILE_SHOOT from Projectile::tick, after arrows move.
+                    if first_tick
+                        && crate::entity::projectile::is_projectile(entity_inner.entity_type)
+                    {
+                        entity_inner
+                            .world
+                            .load()
+                            .game_event(
+                                pumpkin_data::game_event::GameEvent::ProjectileShoot,
+                                entity_pos,
+                                &crate::world::game_event::vibration::GameEventContext::of_entity(
+                                    &e_clone,
+                                ),
+                            )
+                            .await;
+                    }
 
                     for (player, player_pos, player_bb) in p_cache.iter() {
                         if (player_pos.x - entity_pos.x).abs() < 5.0
@@ -4219,16 +4236,6 @@ impl World {
     pub async fn spawn_entity(self: &Arc<Self>, entity: Arc<dyn EntityBase>) {
         self.broadcast_entity_spawn(&entity);
         entity.init_data_tracker().await;
-        if entity.get_entity().age.load(Ordering::Relaxed) == 0
-            && crate::entity::projectile::is_projectile(entity.get_entity().entity_type)
-        {
-            self.game_event(
-                pumpkin_data::game_event::GameEvent::ProjectileShoot,
-                entity.get_entity().pos.load(),
-                &crate::world::game_event::vibration::GameEventContext::of_entity(&entity),
-            )
-            .await;
-        }
         self.add_entity_silent(entity).await;
     }
 

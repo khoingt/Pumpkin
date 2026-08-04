@@ -36,6 +36,7 @@ pub fn is_projectile(entity_type: &EntityType) -> bool {
         || *entity_type == EntityType::SPLASH_POTION
         || *entity_type == EntityType::LINGERING_POTION
         || *entity_type == EntityType::ENDER_PEARL
+        || *entity_type == EntityType::EYE_OF_ENDER
         || *entity_type == EntityType::SHULKER_BULLET
         || *entity_type == EntityType::FIREBALL
         || *entity_type == EntityType::SMALL_FIREBALL
@@ -378,5 +379,16 @@ impl ProjectileHit {
             Self::Block { face, .. } => Some(*face),
             Self::Entity { .. } => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn throwable_utility_entities_emit_projectile_events() {
+        assert!(is_projectile(&EntityType::EGG));
+        assert!(is_projectile(&EntityType::EYE_OF_ENDER));
     }
 }
