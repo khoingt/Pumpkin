@@ -2,6 +2,7 @@ use super::{Entity, EntityBase, NBTStorage, living::LivingEntity};
 use crate::server::Server;
 use pumpkin_data::BlockDirection;
 use pumpkin_data::entity::EntityType;
+use pumpkin_data::game_event::GameEvent;
 use pumpkin_protocol::java::client::play::CEntityVelocity;
 use pumpkin_util::math::boundingbox::BoundingBox;
 use pumpkin_util::math::{position::BlockPos, vector3::Vector3};
@@ -220,6 +221,8 @@ impl ThrownItemEntity {
                 return;
             }
 
+            emit_projectile_land(caller, &h);
+
             // Just trigger hit effects and remove
             caller.on_hit(h).await;
             entity.remove().await;
@@ -331,6 +334,18 @@ pub enum ProjectileHit {
         hit_pos: Vector3<f64>,
         normal: Vector3<f64>,
     },
+}
+
+pub fn emit_projectile_land(projectile: &Arc<dyn EntityBase>, hit: &ProjectileHit) {
+    let pos = match hit {
+        ProjectileHit::Block { pos, .. } => pos.to_centered_f64(),
+        ProjectileHit::Entity { hit_pos, .. } => *hit_pos,
+    };
+    projectile.get_entity().world.load().game_event(
+        GameEvent::ProjectileLand,
+        pos,
+        &crate::world::game_event::vibration::GameEventContext::of_entity(projectile),
+    );
 }
 
 impl ProjectileHit {

@@ -3328,6 +3328,11 @@ impl World {
     pub async fn explode(self: &Arc<Self>, position: Vector3<f64>, power: f32) {
         let explosion = Explosion::new(power, position);
         let block_count = explosion.explode(self).await;
+        self.game_event(
+            pumpkin_data::game_event::GameEvent::Explode,
+            position,
+            &crate::world::game_event::vibration::GameEventContext::default(),
+        );
         let particle = if power < 2.0 {
             Particle::Explosion
         } else {
@@ -4210,9 +4215,18 @@ impl World {
         });
     }
 
-    pub async fn spawn_entity(&self, entity: Arc<dyn EntityBase>) {
+    pub async fn spawn_entity(self: &Arc<Self>, entity: Arc<dyn EntityBase>) {
         self.broadcast_entity_spawn(&entity);
         entity.init_data_tracker().await;
+        if entity.get_entity().age.load(Ordering::Relaxed) == 0
+            && crate::entity::projectile::is_projectile(entity.get_entity().entity_type)
+        {
+            self.game_event(
+                pumpkin_data::game_event::GameEvent::ProjectileShoot,
+                entity.get_entity().pos.load(),
+                &crate::world::game_event::vibration::GameEventContext::of_entity(&entity),
+            );
+        }
         self.add_entity_silent(entity).await;
     }
 

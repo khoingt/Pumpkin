@@ -40,7 +40,7 @@ use crossbeam::atomic::AtomicCell;
 use pumpkin_data::attributes::Attributes;
 use pumpkin_data::damage::DeathMessageType;
 use pumpkin_data::data_component_impl::Operation;
-use pumpkin_data::data_component_impl::food::{ConsumableImpl, ConsumeEffect};
+use pumpkin_data::data_component_impl::food::{ConsumableImpl, ConsumeAnimation, ConsumeEffect};
 use pumpkin_data::data_component_impl::{
     AttributeModifiersImpl, BlocksAttacksImpl, DeathProtectionImpl, EnchantmentsImpl,
     EquipmentSlot, EquippableImpl, FoodImpl,
@@ -2599,10 +2599,10 @@ impl EntityBase for LivingEntity {
                 || self.entity.get_supporting_block_pos(),
                 super::player::Player::get_supporting_block_pos,
             );
+            let world = self.entity.world.load();
 
             // Notify the block under the entity each tick if a supporting block position is found
             if let Some(supporting) = supporting_pos {
-                let world = self.entity.world.load();
                 let (block, state) = world.get_block_and_state(&supporting);
 
                 world
@@ -2635,20 +2635,21 @@ impl EntityBase for LivingEntity {
                         )
                         .await;
                 }
-                {
-                    use crate::world::game_event::vibration::GameEventContext;
-                    use pumpkin_data::game_event::GameEvent;
-                    let m = self.entity.movement.load();
-                    if m.x != 0.0 || m.z != 0.0 {
-                        let entity_pos = self.entity.pos.load();
-                        let source_pos = pumpkin_util::math::vector3::Vector3::new(
-                            entity_pos.x,
-                            entity_pos.y,
-                            entity_pos.z,
-                        );
-                        let context = GameEventContext::of_entity(caller);
-                        world.game_event(GameEvent::Step, source_pos, &context);
-                    }
+            }
+
+            let movement = self.entity.movement.load();
+            if movement.x != 0.0 || movement.z != 0.0 {
+                let event = if self.entity.touching_water.load(Ordering::Relaxed) {
+                    Some(pumpkin_data::game_event::GameEvent::Swim)
+                } else {
+                    supporting_pos.map(|_| pumpkin_data::game_event::GameEvent::Step)
+                };
+                if let Some(event) = event {
+                    world.game_event(
+                        event,
+                        self.entity.pos.load(),
+                        &crate::world::game_event::vibration::GameEventContext::of_entity(caller),
+                    );
                 }
             }
 
@@ -2672,6 +2673,21 @@ impl EntityBase for LivingEntity {
                     }
 
                     self.apply_consumable_effects(item).await;
+
+                    if let Some(consumable) = item.get_data_component::<ConsumableImpl>() {
+                        let event = if consumable.animation == ConsumeAnimation::Drink {
+                            pumpkin_data::game_event::GameEvent::Drink
+                        } else {
+                            pumpkin_data::game_event::GameEvent::Eat
+                        };
+                        world.game_event(
+                            event,
+                            self.entity.pos.load(),
+                            &crate::world::game_event::vibration::GameEventContext::of_entity(
+                                caller,
+                            ),
+                        );
+                    }
 
                     // Handle potion consumption
                     if item.get_data_component::<pumpkin_data::data_component_impl::PotionContentsImpl>().is_some() {
