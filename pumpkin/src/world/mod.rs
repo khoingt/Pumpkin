@@ -4628,6 +4628,19 @@ impl World {
 
             let broken_state_id = self.set_block_state(position, new_state_id, flags).await;
 
+            let context = cause.as_ref().map_or_else(
+                crate::world::game_event::vibration::GameEventContext::default,
+                |player| {
+                    let source_entity: Arc<dyn EntityBase> = player.clone();
+                    crate::world::game_event::vibration::GameEventContext::of_entity(&source_entity)
+                },
+            );
+            self.game_event(
+                pumpkin_data::game_event::GameEvent::BlockDestroy,
+                position.to_centered_f64(),
+                &context,
+            );
+
             // Close container screens for any players viewing this block
             self.close_container_screens_at(position).await;
 

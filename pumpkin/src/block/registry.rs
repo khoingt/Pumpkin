@@ -634,6 +634,13 @@ impl BlockRegistry {
         )
         .await;
 
+        let source_entity: Arc<dyn EntityBase> = player.clone();
+        world.game_event(
+            pumpkin_data::game_event::GameEvent::BlockPlace,
+            final_block_pos.to_centered_f64(),
+            &crate::world::game_event::vibration::GameEventContext::of_entity(&source_entity),
+        );
+
         player
             .trigger_advancement(
                 crate::entity::player::advancement::trigger::AdvancementTrigger::PlacedBlock {

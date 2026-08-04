@@ -208,6 +208,7 @@ pub trait VibrationUser: Send + Sync {
         &self,
         world: &Arc<World>,
         listener_pos: &BlockPos,
+        source_pos: &BlockPos,
         event: &GameEvent,
         context: &GameEventContext,
     ) -> bool;
@@ -259,7 +260,13 @@ impl VibrationListener {
         if d_sq > f64::from(r * r) {
             return false;
         }
-        if !user.can_receive_vibration(world, &self.position, &event, context) {
+        if !user.can_receive_vibration(
+            world,
+            &self.position,
+            &BlockPos::floored_v(*source_position),
+            &event,
+            context,
+        ) {
             return false;
         }
 
@@ -377,9 +384,15 @@ impl VibrationUser for SculkSensorVibrationUser {
         &self,
         world: &Arc<World>,
         listener_pos: &BlockPos,
+        source_pos: &BlockPos,
         event: &GameEvent,
         _context: &GameEventContext,
     ) -> bool {
+        if source_pos == listener_pos
+            && matches!(event, GameEvent::BlockPlace | GameEvent::BlockDestroy)
+        {
+            return false;
+        }
         let state = world.get_block_state(listener_pos);
         if !is_phase_inactive(state.id) {
             return false;

@@ -33,6 +33,7 @@ impl VibrationUser for BenchUser {
         &self,
         _world: &Arc<World>,
         _listener_pos: &BlockPos,
+        _source_pos: &BlockPos,
         _event: &GameEvent,
         _context: &GameEventContext,
     ) -> bool {
