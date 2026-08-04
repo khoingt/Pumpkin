@@ -1350,6 +1350,12 @@ impl LivingEntity {
             self.movement_input.store(Vector3::default());
             self.jumping.store(false, Relaxed);
 
+            world.game_event(
+                pumpkin_data::game_event::GameEvent::EntityDie,
+                self.entity.pos.load(),
+                &crate::world::game_event::vibration::GameEventContext::of_entity(&dyn_self),
+            );
+
             // Statistics updates
             self.update_death_stats(&*dyn_self, cause).await;
 
@@ -2488,6 +2494,16 @@ impl EntityBase for LivingEntity {
             let clamped_health = new_health.max(0.0).min(max_h);
             if remaining > 0.0 {
                 self.set_health(clamped_health);
+
+                if let Some(dyn_self) = world.get_entity_by_id(self.entity.entity_id) {
+                    world.game_event(
+                        pumpkin_data::game_event::GameEvent::EntityDamage,
+                        self.entity.pos.load(),
+                        &crate::world::game_event::vibration::GameEventContext::of_entity(
+                            &dyn_self,
+                        ),
+                    );
+                }
 
                 // Statistics updates
                 if let Some(player) = caller.get_player() {
