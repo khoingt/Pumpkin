@@ -11,12 +11,15 @@ use pumpkin_data::block_properties::{
 use pumpkin_data::game_event::GameEvent;
 use pumpkin_data::tag::Taggable;
 use pumpkin_data::{BlockDirection, BlockId, BlockStateId, particle::Particle, tag};
+use pumpkin_nbt::compound::NbtCompound;
+use pumpkin_nbt::tag::NbtTag;
 use pumpkin_protocol::codec::var_int::VarInt;
 use pumpkin_protocol::java::client::play::CParticle;
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector3::Vector3;
 use std::sync::Mutex;
 use std::sync::atomic::Ordering;
+use uuid::Uuid;
 
 use crate::entity::EntityBase;
 use crate::world::World;
@@ -102,8 +105,51 @@ pub struct VibrationInfo {
     pub game_event: GameEvent,
     pub pos: Vector3<f64>,
     pub source_entity: Option<Arc<dyn EntityBase>>,
+    pub source_entity_uuid: Option<Uuid>,
     pub distance: f32,
     pub tick: i64,
+}
+
+impl VibrationInfo {
+    fn to_nbt(&self) -> NbtCompound {
+        let mut nbt = NbtCompound::new();
+        nbt.put_string(
+            "game_event",
+            format!("minecraft:{}", self.game_event.name()),
+        );
+        nbt.put_float("distance", self.distance);
+        nbt.put_list(
+            "pos",
+            vec![
+                NbtTag::Double(self.pos.x),
+                NbtTag::Double(self.pos.y),
+                NbtTag::Double(self.pos.z),
+            ],
+        );
+        if let Some(source) = self.source_entity.as_ref() {
+            nbt.put_uuid("source", source.get_entity().entity_uuid);
+        } else if let Some(source) = self.source_entity_uuid {
+            nbt.put_uuid("source", source);
+        }
+        nbt
+    }
+
+    fn from_nbt(nbt: &NbtCompound, tick: i64) -> Option<Self> {
+        let pos = nbt.get_list("pos")?;
+        let [x, y, z] = pos else { return None };
+        Some(Self {
+            game_event: GameEvent::from_name(nbt.get_string("game_event")?)?,
+            pos: Vector3::new(
+                x.extract_double()?,
+                y.extract_double()?,
+                z.extract_double()?,
+            ),
+            source_entity: None,
+            source_entity_uuid: nbt.get_uuid("source"),
+            distance: nbt.get_float("distance")?,
+            tick,
+        })
+    }
 }
 
 pub struct VibrationSelector {
@@ -150,12 +196,31 @@ impl VibrationSelector {
             None
         }
     }
+
+    fn to_nbt(&self) -> NbtCompound {
+        let mut nbt = NbtCompound::new();
+        if let Some(candidate) = self.candidate.as_ref() {
+            nbt.put_compound("event", candidate.to_nbt());
+            nbt.put_long("tick", candidate.tick);
+        } else {
+            nbt.put_long("tick", -1);
+        }
+        nbt
+    }
+
+    fn from_nbt(nbt: &NbtCompound) -> Self {
+        let candidate = nbt
+            .get_compound("event")
+            .and_then(|event| VibrationInfo::from_nbt(event, nbt.get_long("tick").unwrap_or(-1)));
+        Self { candidate }
+    }
 }
 
 pub struct VibrationData {
     current_vibration: Option<VibrationInfo>,
     receive_time: i32,
     selector: VibrationSelector,
+    reload_particle: bool,
 }
 
 impl Default for VibrationData {
@@ -170,6 +235,7 @@ impl VibrationData {
             current_vibration: None,
             receive_time: 0,
             selector: VibrationSelector::new(),
+            reload_particle: false,
         }
     }
 
@@ -206,6 +272,52 @@ impl VibrationData {
 
     pub const fn consume_current(&mut self) -> Option<VibrationInfo> {
         self.current_vibration.take()
+    }
+
+    fn reload_particle(
+        &mut self,
+        destination: Vector3<f64>,
+        user: &dyn VibrationUser,
+    ) -> Option<(Vector3<f64>, i32)> {
+        if !std::mem::take(&mut self.reload_particle) {
+            return None;
+        }
+        let vibration = self.current_vibration.as_ref()?;
+        let initial_time = user.calculate_travel_time_in_ticks(vibration.distance);
+        let progress = if initial_time == 0 {
+            0.0
+        } else {
+            1.0 - f64::from(self.receive_time) / f64::from(initial_time)
+        };
+        Some((
+            vibration.pos.lerp(&destination, progress),
+            self.receive_time,
+        ))
+    }
+
+    #[must_use]
+    pub fn to_nbt(&self) -> NbtCompound {
+        let mut nbt = NbtCompound::new();
+        if let Some(vibration) = self.current_vibration.as_ref() {
+            nbt.put_compound("event", vibration.to_nbt());
+        }
+        nbt.put_compound("selector", self.selector.to_nbt());
+        nbt.put_int("event_delay", self.receive_time.max(0));
+        nbt
+    }
+
+    pub fn from_nbt(nbt: &NbtCompound) -> Self {
+        let current_vibration = nbt
+            .get_compound("event")
+            .and_then(|event| VibrationInfo::from_nbt(event, -1));
+        Self {
+            reload_particle: current_vibration.is_some(),
+            current_vibration,
+            receive_time: nbt.get_int("event_delay").unwrap_or(0).max(0),
+            selector: nbt
+                .get_compound("selector")
+                .map_or_else(VibrationSelector::new, VibrationSelector::from_nbt),
+        }
     }
 }
 
@@ -247,6 +359,14 @@ impl VibrationListener {
         Self {
             position,
             data: Mutex::new(VibrationData::new()),
+        }
+    }
+
+    #[must_use]
+    pub fn from_nbt(position: BlockPos, nbt: &NbtCompound) -> Self {
+        Self {
+            position,
+            data: Mutex::new(VibrationData::from_nbt(nbt)),
         }
     }
 
@@ -296,9 +416,14 @@ impl VibrationListener {
             game_event: event,
             pos: *source_position,
             source_entity: context.source_entity().cloned(),
+            source_entity_uuid: None,
             distance,
             tick: world_tick,
         });
+        drop(data);
+        if let Some(block_entity) = world.get_block_entity(&self.position) {
+            world.persist_block_entity(&block_entity);
+        }
         true
     }
 }
@@ -374,16 +499,23 @@ pub async fn vibration_tick(
             active_chunks.contains(&chunk) && world.level.is_chunk_loaded(&chunk)
         })
     });
-    let (particle, vib) = {
+    let (particle, vib, should_persist) = {
         let mut data = listener.data.lock().unwrap();
-        let particle = data.try_select_and_schedule(world_tick, user);
+        let particle = data
+            .try_select_and_schedule(world_tick, user)
+            .or_else(|| data.reload_particle(listener.position.to_centered_f64(), user));
+        let should_persist = data.has_current_vibration();
         let vibration = if data.tick_receive() && adjacent_chunks_ticking {
             data.consume_current()
         } else {
             None
         };
-        (particle, vibration)
+        (particle, vibration, should_persist)
     };
+
+    if should_persist && let Some(block_entity) = world.get_block_entity(&listener.position) {
+        world.persist_block_entity(&block_entity);
+    }
 
     if let Some((origin, arrival_in_ticks)) = particle {
         let data = vibration_particle_data(listener.position, arrival_in_ticks);
@@ -409,13 +541,17 @@ pub async fn vibration_tick(
 
     let Some(vib) = vib else { return };
 
+    let source_entity = vib.source_entity.or_else(|| {
+        vib.source_entity_uuid
+            .and_then(|uuid| world.get_entity_by_uuid(uuid))
+    });
     user.on_receive_vibration(
         world,
         &listener.position,
         &vib.game_event,
         &GameEventContext::default(),
         vib.distance,
-        vib.source_entity.as_ref(),
+        source_entity.as_ref(),
     )
     .await;
 }
@@ -527,9 +663,11 @@ impl VibrationUser for SculkSensorVibrationUser {
 mod tests {
     use pumpkin_data::{Block, game_event::GameEvent};
     use pumpkin_util::{math::position::BlockPos, math::vector3::Vector3};
+    use uuid::Uuid;
 
     use super::{
-        GameEventContext, is_ignored_when_sneaking, is_valid_vibration, vibration_particle_data,
+        GameEventContext, VibrationData, VibrationInfo, VibrationSelector,
+        is_ignored_when_sneaking, is_valid_vibration, vibration_particle_data,
     };
 
     #[test]
@@ -556,5 +694,43 @@ mod tests {
         ));
         assert!(is_ignored_when_sneaking(GameEvent::ProjectileShoot));
         assert!(!is_ignored_when_sneaking(GameEvent::ProjectileLand));
+    }
+
+    #[test]
+    fn vibration_data_nbt_round_trips_in_flight_state() {
+        let source = Uuid::from_u128(42);
+        let data = VibrationData {
+            current_vibration: Some(VibrationInfo {
+                game_event: GameEvent::ProjectileShoot,
+                pos: Vector3::new(1.25, 2.5, 3.75),
+                source_entity: None,
+                source_entity_uuid: Some(source),
+                distance: 6.5,
+                tick: -1,
+            }),
+            receive_time: 4,
+            selector: VibrationSelector {
+                candidate: Some(VibrationInfo {
+                    game_event: GameEvent::Step,
+                    pos: Vector3::new(4.0, 5.0, 6.0),
+                    source_entity: None,
+                    source_entity_uuid: None,
+                    distance: 3.0,
+                    tick: 99,
+                }),
+            },
+            reload_particle: false,
+        };
+
+        let restored = VibrationData::from_nbt(&data.to_nbt());
+        let current = restored.current_vibration.as_ref().unwrap();
+        let candidate = restored.selector.candidate.as_ref().unwrap();
+        assert_eq!(current.game_event, GameEvent::ProjectileShoot);
+        assert_eq!(current.pos, Vector3::new(1.25, 2.5, 3.75));
+        assert_eq!(current.source_entity_uuid, Some(source));
+        assert_eq!(restored.receive_time, 4);
+        assert!(restored.reload_particle);
+        assert_eq!(candidate.game_event, GameEvent::Step);
+        assert_eq!(candidate.tick, 99);
     }
 }

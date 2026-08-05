@@ -5279,6 +5279,21 @@ impl World {
             });
     }
 
+    pub fn persist_block_entity(&self, block_entity: &Arc<dyn BlockEntity>) {
+        if let Some(nbt) = block_entity.chunk_data_nbt() {
+            self.persist_block_entity_nbt(block_entity, nbt);
+        }
+    }
+
+    fn persist_block_entity_nbt(&self, block_entity: &Arc<dyn BlockEntity>, mut nbt: NbtCompound) {
+        let block_pos = block_entity.get_position();
+        nbt.put_string("id", block_entity.resource_location().to_string());
+        nbt.put_int("x", block_pos.0.x);
+        nbt.put_int("y", block_pos.0.y);
+        nbt.put_int("z", block_pos.0.z);
+        self.add_block_entity_nbt(block_pos, &nbt);
+    }
+
     pub fn remove_block_entity(&self, block_pos: &BlockPos) {
         let chunk_pos = block_pos.chunk_position();
         let removed =
@@ -5311,39 +5326,22 @@ impl World {
     }
 
     pub fn update_block_entity(&self, block_entity: &Arc<dyn BlockEntity>) {
-        let block_pos = block_entity.get_position();
-        let chunk_pos = block_pos.chunk_position();
-        let block_entity_nbt = block_entity.chunk_data_nbt();
+        let Some(nbt) = block_entity.chunk_data_nbt() else {
+            return;
+        };
+        let chunk_pos = block_entity.get_position().chunk_position();
 
-        if let Some(nbt) = &block_entity_nbt {
-            let mut bytes = Vec::new();
-            to_bytes_unnamed(nbt, &mut bytes).unwrap();
-            self.broadcast_to_chunk(
-                chunk_pos,
-                &CBlockEntityData::new(
-                    block_entity.get_position(),
-                    VarInt(block_entity.get_id() as i32),
-                    bytes.into_boxed_slice(),
-                ),
-            );
-            let mut full_nbt = nbt.clone();
-            full_nbt.put_string("id", block_entity.resource_location().to_string());
-            let pos = block_entity.get_position();
-            full_nbt.put_int("x", pos.0.x);
-            full_nbt.put_int("y", pos.0.y);
-            full_nbt.put_int("z", pos.0.z);
-            self.add_block_entity_nbt(block_pos, &full_nbt);
-        }
-        self.level.read_chunk_sync(&chunk_pos, |chunk| {
-            if let Some(nbt) = &block_entity_nbt {
-                chunk
-                    .pending_block_entities
-                    .lock()
-                    .unwrap()
-                    .insert(block_pos, nbt.clone());
-            }
-            chunk.mark_dirty(true);
-        });
+        let mut bytes = Vec::new();
+        to_bytes_unnamed(&nbt, &mut bytes).unwrap();
+        self.broadcast_to_chunk(
+            chunk_pos,
+            &CBlockEntityData::new(
+                block_entity.get_position(),
+                VarInt(block_entity.get_id() as i32),
+                bytes.into_boxed_slice(),
+            ),
+        );
+        self.persist_block_entity_nbt(block_entity, nbt);
     }
 
     /// Dispatch a game event to all in-range sculk listeners.

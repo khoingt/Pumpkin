@@ -68,6 +68,7 @@ fn bench_vibration_selector(c: &mut Criterion) {
                     game_event: GameEvent::Step,
                     pos: Vector3::new(0.0, 0.0, 0.0),
                     source_entity: None,
+                    source_entity_uuid: None,
                     distance: 5.0,
                     tick: 100,
                 };
@@ -90,6 +91,7 @@ fn bench_vibration_selector(c: &mut Criterion) {
                         game_event: GameEvent::Step,
                         pos: Vector3::new(i as f64, 0.0, 0.0),
                         source_entity: None,
+                        source_entity_uuid: None,
                         distance: 10.0 - i as f32,
                         tick: 100,
                     };
@@ -122,6 +124,7 @@ fn bench_vibration_data_tick(c: &mut Criterion) {
                     game_event: GameEvent::Step,
                     pos: Vector3::new(0.0, 0.0, 0.0),
                     source_entity: None,
+                    source_entity_uuid: None,
                     distance: 5.0,
                     tick: 0,
                 };

@@ -33,7 +33,10 @@ impl<const CALIBRATED: bool> BlockEntity for SculkSensorBlockEntityImpl<CALIBRAT
         Self {
             position,
             last_vibration_frequency: AtomicI32::new(last_vibration_frequency),
-            listener: VibrationListener::new(position),
+            listener: nbt.get_compound("listener").map_or_else(
+                || VibrationListener::new(position),
+                |listener| VibrationListener::from_nbt(position, listener),
+            ),
         }
     }
 
@@ -46,6 +49,7 @@ impl<const CALIBRATED: bool> BlockEntity for SculkSensorBlockEntityImpl<CALIBRAT
                 "last_vibration_frequency",
                 self.last_vibration_frequency.load(Ordering::Relaxed),
             );
+            nbt.put_compound("listener", self.listener.data.lock().unwrap().to_nbt());
         })
     }
     fn chunk_data_nbt(&self) -> Option<NbtCompound> {
